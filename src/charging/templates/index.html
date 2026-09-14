@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% from "_macros.html" import station_status %}
+{% block title %}Stanice{% endblock %}
+{% block content %}
+<section class="hero">
+  <h1>Nabíjecí stanice</h1>
+  <p>10 nabíječek, rezervace po 30minutových slotech. Vysokorychlostní nabíječky (HPC) jsou vyhrazené pouze pro plně elektrické vozy (BEV), ne pro plug-in hybridy.</p>
+  {% if not g.user %}<p><a class="btn" href="{{ url_for('auth.login') }}">Přihlaste se</a> pro vytvoření rezervace.</p>{% endif %}
+</section>
+
+<div class="grid-cards">
+  {% for st in stations %}
+  <a class="card station-card{% if st.is_high_speed %} hpc{% endif %}" href="{{ url_for('main.station_detail', station_id=st.id) }}">
+    <div class="card-head">
+      <strong>{{ st.name }}</strong>
+      {% if st.is_high_speed %}<span class="badge hpc-badge">⚡ Vysokorychlostní · jen BEV</span>{% endif %}
+    </div>
+    <div class="power">{{ st.power_kw }} <small>kW</small></div>
+    <div>{{ station_status(st.status) }} {% if st.status_info %}<small class="muted">{{ st.status_info }}</small>{% endif %}</div>
+    {% if g.user and st.is_high_speed and g.user.vehicle_type != 'BEV' %}
+      <small class="warn">Váš plug-in hybrid tuto nabíječku rezervovat nemůže.</small>
+    {% endif %}
+  </a>
+  {% endfor %}
+</div>
+{% endblock %}
