@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Registrace{% endblock %}
+{% block content %}
+<section class="card form-card narrow">
+  <h1>Registrace</h1>
+  <form method="post" class="form-col">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>Uživatelské jméno <input name="username" value="{{ form.username }}" required minlength="3" maxlength="32" autocomplete="username"></label>
+    <label>Heslo (min. 8 znaků) <input type="password" name="password" required minlength="8" autocomplete="new-password"></label>
+    <label>Heslo znovu <input type="password" name="password_again" required minlength="8" autocomplete="new-password"></label>
+    <fieldset>
+      <legend>Typ vozidla</legend>
+      <label class="radio"><input type="radio" name="vehicle_type" value="BEV"{% if form.vehicle_type == 'BEV' %} checked{% endif %}> Plně elektrický (BEV) – může i na vysokorychlostní nabíječky</label>
+      <label class="radio"><input type="radio" name="vehicle_type" value="PHEV"{% if form.vehicle_type == 'PHEV' %} checked{% endif %}> Plug-in hybrid (PHEV)</label>
+    </fieldset>
+    <button class="btn">Vytvořit účet</button>
+  </form>
+</section>
+{% endblock %}

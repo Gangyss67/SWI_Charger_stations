@@ -1,0 +1,17 @@
+{% macro state_badge(state) -%}
+  {%- set labels = {'DRAFT': 'Koncept', 'PENDING': 'Čeká na schválení', 'CONFIRMED': 'Potvrzená', 'CANCELLED': 'Zrušená'} -%}
+  <span class="badge state-{{ state|lower }}">{{ state }} · {{ labels[state] }}</span>
+{%- endmacro %}
+
+{% macro station_status(status) -%}
+  {%- set labels = {'FREE': 'Volná', 'RESERVED': 'Rezervovaná', 'IN_USE': 'Aktuálně používaná', 'PAST': 'Nedostupné'} -%}
+  <span class="badge slot-{{ status|lower }}">{{ labels[status] }}</span>
+{%- endmacro %}
+
+{% macro action_button(endpoint, reservation_id, label, style='', next='') -%}
+  <form method="post" action="{{ url_for(endpoint, reservation_id=reservation_id) }}" class="inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
+    <button class="btn small {{ style }}">{{ label }}</button>
+  </form>
+{%- endmacro %}

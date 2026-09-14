@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% from "_macros.html" import state_badge, action_button %}
+{% block title %}Moje rezervace{% endblock %}
+{% block content %}
+<h1>Moje rezervace</h1>
+{% if not reservations %}
+  <p class="muted">Zatím nemáte žádné rezervace. <a href="{{ url_for('main.index') }}">Vyberte stanici.</a></p>
+{% else %}
+<div class="table-wrap">
+<table>
+  <thead><tr><th>#</th><th>Stanice</th><th>Termín</th><th>Stav</th><th></th></tr></thead>
+  <tbody>
+  {% for r in reservations %}
+    <tr>
+      <td>{{ r.id }}</td>
+      <td>{{ r.station_name }} <small class="muted">{{ r.power_kw }} kW</small></td>
+      <td>{{ r.start_time|timerange(r.end_time) }}</td>
+      <td>{{ state_badge(r.state) }} {% if r.usage %}<small class="muted">{{ r.usage }}</small>{% endif %}
+        {% if r.state in ('DRAFT', 'PENDING') and r.has_conflict %}<br><small class="warn">Koliduje s potvrzenou rezervací</small>{% endif %}</td>
+      <td class="actions">
+        {% if r.can_submit %}{{ action_button('main.submit_reservation', r.id, 'Odeslat') }}{% endif %}
+        {% if r.can_cancel %}{{ action_button('main.cancel_reservation', r.id, 'Zrušit', 'danger') }}{% endif %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% endblock %}
