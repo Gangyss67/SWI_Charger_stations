@@ -1,74 +1,54 @@
-# Project Frame
-
 ## Reservation domain
-Co konkrétně rezervujeme?
-
-_TODO_
+Charging stations on a parking lot
 
 ## Purpose
-2–3 věty: komu systém slouží a proč.
-
-_TODO_
+The system is used to reserve parking spaces with acces to charging stations with different charging speeds. The goal is to prevent situations where the parking lot is overcrowded or being used inefficiently.
 
 ## Users / Stakeholders
-1–3 role.
-
-- _TODO_
+User – has the ability to create and cancel a reservation
+Admin – has the ability to view all reservations and modify or cancel a reservation
 
 ## Core concepts
-Reservation, Resource, User + případně 0–3 další pojmy.
-
-- **Reservation:** _TODO_
-- **Resource:** _TODO_
-- **User:** _TODO_
+Reservation, Charging station, User, EV sorting (EV, plug-in hybrid)
 
 ## Core operations
 - Create reservation
 - Confirm / approve reservation
 - Cancel reservation
-- Check availability
+- View reservation
+- View parking space
 
 ## Persistent state
-Co ukládáme o Reservation a Resource.
-
-- **Reservation:** _TODO_
-- **Resource:** _TODO_
+Specific parking slot, charging speed, time slot, user information (EV type, license plate)
 
 ## State-changing operation
-Např. DRAFT → CONFIRMED.
-
-_TODO_
+DRAFT → CONFIRMED
+CONFIRMED → CANCELLED
+CONFIRMED → CANCELLED BY ADMIN
+CONFIRMED → PENDING
+PENDING → CANCELLED PREMATURELY
 
 ## Common business rule
-Confirmed reservations for the same resource must not overlap.
+Confirmed reservations for the same charging station must not overlap.
 
 ## Domain-specific business rule
-Jedno vlastní pravidlo.
-
-_TODO_
+Only an EV can par at a high-speed charging station, plug-in hybrids have to use slower chargers.
 
 ## External / system boundary
-Jedna dependency. Defaultně Notification Service.
-
-_TODO_
+Notification Service – a parking space has opened up, a parking space with a higher charging speed has opened up
 
 ## Assumption
-Jedna věc, kterou nyní považujete za pravdivou, ale není jistota.
-
-_TODO_
+User discipline. Users arrive at the parking space and leave it on time – complying with reserved time slots
 
 ## Unknown
-Jedna důležitá věc, kterou nyní nevíte.
+How the actual presence and identity (EV type and license plate) of the vehicle at the location will be verified.
 
-_TODO_
-
----
 
 ## Selected future pressure
 Category: Q
 
 Concrete pressure:
-10× více souběžných požadavků na vytvoření a schválení rezervací (např. firemní vozový park, který v pondělí ráno hromadně rezervuje sloty na celý týden) – desítky zápisů za sekundu místo jednotek.
+A 10x increase in concurrent requests to reserve available slots and make reservations within a narrow time window.
 
 Why it is relevant to our reservation system:
-Jádrem systému je pravidlo, že se potvrzené rezervace stejné stanice nesmí překrývat, a to musí platit i tehdy, když dva požadavky kontrolují dostupnost ve stejný okamžik. Dnes to řešíme transakcí `BEGIN IMMEDIATE` a triggerem v SQLite, která ale povoluje jen jednoho zapisujícího najednou – při vyšší souběžnosti porostou čekání na zámek a hrozí chyby `database is locked`. Tlak tedy přímo míří na naše rozhodnutí o databázi a na správnost overlap pravidla. V C01 ho neimplementujeme.
+Confirmed reservations for the same station must not overlap. High levels of concurrent activity create a risk of race conditions (where two users attempt to book the same time slot at the same station within the same fraction of a second). The system must atomically verify both the availability of the slot and the fact that the fast chargers may only be occupied by EVs and not plug-in hybrids.
