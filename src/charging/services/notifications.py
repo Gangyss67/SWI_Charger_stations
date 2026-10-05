@@ -45,27 +45,27 @@ class NotificationService:
     def reservation_approved(self, res: dict) -> None:
         self.channel.send(
             res["user_id"],
-            f"Vaše žádost {_describe(res)} byla schválena administrátorem – rezervace je potvrzena (CONFIRMED).",
+            f"Vaše žádost o výjimku {_describe(res)} byla schválena administrátorem. Rezervace je potvrzená.",
         )
 
     def reservation_rejected(self, res: dict) -> None:
         self.channel.send(
             res["user_id"],
-            f"Vaše žádost {_describe(res)} byla zamítnuta administrátorem (REJECTED). "
-            f"Termín je opět volný – zvolte jiný čas nebo stanici.",
+            f"Vaše žádost o výjimku {_describe(res)} byla zamítnuta administrátorem. "
+            f"Zvolte jinou stanici nebo vozidlo, které ji plně využije.",
         )
 
     def reservation_cancelled_by_admin(self, res: dict) -> None:
         self.channel.send(
             res["user_id"],
-            f"Vaše rezervace {_describe(res)} byla zrušena administrátorem ({res['state']}).",
+            f"Vaše rezervace {_describe(res)} byla zrušena administrátorem.",
         )
 
     def slot_released(self, station_id: int, start: datetime, end: datetime, exclude_user_id: int) -> None:
         """Stanice přestala být v intervalu blokována. Upozorníme:
         1) vlastníky návrhů (DRAFT) na stejné stanici, které teď lze potvrdit,
-        2) uživatele s aktivní rezervací ve stejném čase na slabší stanici, kteří smí
-           uvolněnou stanici použít (HPC jen BEV podle typu vozu v rezervaci) – uvolnil se vyšší výkon.
+        2) uživatele s aktivní rezervací ve stejném čase na slabší stanici, jejichž vozidlo smí
+           uvolněnou stanici použít (HPC jen BEV, rychlá stanice jen s DC nabíjením) – uvolnil se vyšší výkon.
         """
         station = self.conn.execute("SELECT * FROM stations WHERE id = ?", (station_id,)).fetchone()
         if station is None:
@@ -102,13 +102,15 @@ class NotificationService:
             """
             SELECT r.id, r.user_id, s.name AS station_name, s.power_kw FROM reservations r
             JOIN stations s ON s.id = r.station_id
+            JOIN vehicle_models vm ON vm.id = r.vehicle_model_id
             WHERE r.station_id <> ? AND r.state IN ('DRAFT', 'PENDING_APPROVAL', 'CONFIRMED')
               AND s.power_kw < ?
               AND r.start_time < ? AND ? < r.end_time
-              AND (? = 0 OR r.vehicle_type = 'BEV')
+              AND (? = 0 OR vm.vehicle_type = 'BEV')
+              AND (? < 50 OR vm.max_dc_kw > 0)
             ORDER BY r.start_time, r.id
             """,
-            (station_id, station["power_kw"], e, s, station["is_high_speed"]),
+            (station_id, station["power_kw"], e, s, station["is_high_speed"], station["power_kw"]),
         ).fetchall()
         for row in better:
             if row["user_id"] in notified:

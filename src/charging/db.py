@@ -10,10 +10,10 @@ from flask import current_app, g
 from werkzeug.security import generate_password_hash
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
-SCHEMA_VERSION = 2  # PRAGMA user_version nastavuje schema.sql; 0/1 = C01 (stavy DRAFT/PENDING/...)
+SCHEMA_VERSION = 3  # PRAGMA user_version nastavuje schema.sql; 0/1 = C01, 2 = v0.2 bez katalogu vozidel
 
-# 10 nabíječek, z toho 3 vysokorychlostní (jen pro BEV). DC 07 a HPC 08–10 (>= 50 kW)
-# vyžadují schválení administrátorem (BR-06).
+# 10 nabíječek, z toho 3 vysokorychlostní (jen pro BEV). DC 07 a HPC 08–10 (>= 50 kW) jsou rychlé:
+# automaticky na ně smí vozidlo, které nabíjí aspoň polovinou jejich výkonu, ostatní jen s výjimkou (BR-06).
 STATIONS = [
     (1, "AC 01", 11, 0),
     (2, "AC 02", 11, 0),
@@ -27,11 +27,32 @@ STATIONS = [
     (10, "HPC 10", 150, 1),
 ]
 
+# Katalog modelů: id, název, pohon, max. DC nabíjecí výkon v kW (orientační hodnoty výrobců; 0 = jen AC).
+VEHICLE_MODELS = [
+    (1, "Škoda Enyaq 85", "BEV", 135),
+    (2, "Škoda Elroq 85", "BEV", 175),
+    (3, "Hyundai Ioniq 5", "BEV", 220),
+    (4, "Tesla Model 3", "BEV", 250),
+    (5, "Kia EV6", "BEV", 240),
+    (6, "Volkswagen ID.3", "BEV", 120),
+    (7, "Fiat 500e", "BEV", 85),
+    (8, "Renault Zoe", "BEV", 50),
+    (9, "Nissan Leaf", "BEV", 50),
+    (10, "Volkswagen e-up!", "BEV", 40),
+    (11, "Dacia Spring", "BEV", 30),
+    (12, "Škoda Superb iV", "PHEV", 50),
+    (13, "Mercedes-Benz C 300 e", "PHEV", 55),
+    (14, "Mitsubishi Outlander PHEV", "PHEV", 22),
+    (15, "Toyota RAV4 Plug-in", "PHEV", 0),
+    (16, "Škoda Octavia iV", "PHEV", 0),
+]
+
 DEMO_USERS = [
-    # username, password, vehicle_type, is_admin
-    ("admin", "admin1234", "BEV", 1),
-    ("ridic_ev", "ev123456", "BEV", 0),
-    ("ridic_phev", "phev1234", "PHEV", 0),
+    # username, password, výchozí model vozidla, is_admin
+    ("admin", "admin1234", 4, 1),
+    ("ridic_ev", "ev123456", 1, 0),  # Škoda Enyaq 85, 135 kW: na HPC automaticky
+    ("ridic_mesto", "mesto1234", 10, 0),  # VW e-up!, 40 kW: na HPC jen s výjimkou
+    ("ridic_phev", "phev1234", 14, 0),  # Outlander PHEV, 22 kW: HPC ne, DC 07 s výjimkou
 ]
 
 
@@ -65,14 +86,18 @@ def init_schema(conn: sqlite3.Connection, seed_demo_users: bool = True) -> None:
             "INSERT OR IGNORE INTO stations (id, name, power_kw, is_high_speed) VALUES (?, ?, ?, ?)",
             STATIONS,
         )
+        conn.executemany(
+            "INSERT OR IGNORE INTO vehicle_models (id, name, vehicle_type, max_dc_kw) VALUES (?, ?, ?, ?)",
+            VEHICLE_MODELS,
+        )
         if seed_demo_users:
-            for username, password, vehicle_type, is_admin in DEMO_USERS:
+            for username, password, vehicle_model_id, is_admin in DEMO_USERS:
                 exists = conn.execute("SELECT 1 FROM users WHERE username = ?", (username,)).fetchone()
                 if not exists:
                     conn.execute(
-                        "INSERT INTO users (username, password_hash, vehicle_type, is_admin, created_at)"
+                        "INSERT INTO users (username, password_hash, vehicle_model_id, is_admin, created_at)"
                         " VALUES (?, ?, ?, ?, ?)",
-                        (username, generate_password_hash(password), vehicle_type, is_admin, now),
+                        (username, generate_password_hash(password), vehicle_model_id, is_admin, now),
                     )
 
 

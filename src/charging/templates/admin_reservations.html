@@ -1,35 +1,41 @@
 {% extends "base.html" %}
-{% from "_macros.html" import state_badge, action_button %}
+{% from "_macros.html" import state, plate, station_cell, action_button %}
 {% block title %}Schvalování{% endblock %}
 {% block content %}
-<h1>Schvalování a správa rezervací</h1>
-<div class="tabs">
-  {% for s in states %}
-    <a class="tab{% if s == state %} active{% endif %}" href="{{ url_for('main.admin_reservations', state=s) }}">{{ 'Vše' if s == 'ALL' else s }}</a>
-  {% endfor %}
+<div class="page-head">
+  <div class="stack">
+    <p class="eyebrow">Administrátor</p>
+    <h1>Schvalování</h1>
+  </div>
+  {% if state == 'PENDING_APPROVAL' %}<p class="lede">Žádosti o výjimku: vozidlo nabíjí méně než polovinou výkonu rychlé stanice. Rozhodněte nejpozději 15 minut před začátkem, jinak žádost propadne a termín se uvolní.</p>{% endif %}
 </div>
-{% if state == 'PENDING_APPROVAL' %}
-  <p class="muted">Žádosti na DC/HPC stanice. O každé je nutné rozhodnout nejpozději 15 minut před začátkem, jinak propadne (EXPIRED) a termín se uvolní.</p>
-{% endif %}
+<nav class="filters" aria-label="Stav rezervací">
+  {% for code, label in tabs %}
+    <a href="{{ url_for('main.admin_reservations', state=code) }}"{% if code == state %} aria-current="true"{% endif %}>{{ label }}</a>
+  {% endfor %}
+</nav>
 {% if not reservations %}
-  <p class="muted">Žádné rezervace v tomto stavu.</p>
+  <p class="empty">Žádné rezervace v tomto stavu.</p>
 {% else %}
 <div class="table-wrap">
 <table>
-  <thead><tr><th>#</th><th>Uživatel</th><th>Stanice</th><th>Termín</th><th>Vůz</th><th>Stav</th><th></th></tr></thead>
+  <thead><tr><th>#</th><th>Řidič</th><th>Stání</th><th>Termín</th><th>Vozidlo</th><th>Stav</th><th><span class="sr-only">Akce</span></th></tr></thead>
   <tbody>
   {% for r in reservations %}
     <tr>
-      <td>{{ r.id }}</td>
+      <td class="num">{{ r.id }}</td>
       <td>{{ r.username }}</td>
-      <td>{{ r.station_name }} <small class="muted">{{ r.power_kw }} kW</small></td>
-      <td>{{ r.start_time|timerange(r.end_time) }}</td>
-      <td>{{ r.vehicle_type }} <small class="muted">{{ r.license_plate }}</small></td>
-      <td>{{ state_badge(r.state) }} {% if r.usage %}<small class="muted">{{ r.usage }}</small>{% endif %}
-        {% if r.state == 'PENDING_APPROVAL' %}<br><small class="warn">Rozhodnout do {{ r.approval_deadline[:16] }}</small>{% endif %}</td>
+      <td>{{ station_cell(r) }}</td>
+      <td class="mono">{{ r.start_time|timerange(r.end_time) }}</td>
+      <td><div class="status">{{ plate(r.license_plate) }}<small>{{ r.vehicle_name }}, {% if r.max_dc_kw %}{{ r.max_dc_kw }} kW DC{% else %}jen AC{% endif %}{% if r.min_vehicle_kw %} (stání od {{ r.min_vehicle_kw }} kW){% endif %}</small></div></td>
+      <td><div class="status">
+        <span>{{ state(r.state) }}</span>
+        {% if r.usage %}<span class="status-hint">{{ r.usage }}</span>{% endif %}
+        {% if r.state == 'PENDING_APPROVAL' %}<span class="status-hint warn">Rozhodnout do <time>{{ r.approval_deadline|dmhm }}</time></span>{% endif %}
+      </div></td>
       <td class="actions">
         {% if r.can_decide %}
-          {{ action_button('main.approve_reservation', r.id, 'Schválit', 'ok', 'admin') }}
+          {{ action_button('main.approve_reservation', r.id, 'Schválit', '', 'admin') }}
           {{ action_button('main.reject_reservation', r.id, 'Zamítnout', 'danger', 'admin') }}
         {% elif r.admin_can_cancel %}
           {{ action_button('main.cancel_reservation', r.id, 'Zrušit', 'danger', 'admin') }}

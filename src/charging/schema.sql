@@ -3,16 +3,24 @@
 -- obejít chybou v aplikační vrstvě ani souběžnými požadavky. Časová pravidla
 -- (5 min DRAFT, T_start − 15 min, storno 30 min) hlídá služba – DB nezná „teď“ aplikace.
 
-CREATE TABLE IF NOT EXISTS users (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    username      TEXT    NOT NULL UNIQUE COLLATE NOCASE,
-    password_hash TEXT    NOT NULL,
-    vehicle_type  TEXT    NOT NULL CHECK (vehicle_type IN ('BEV', 'PHEV')),  -- výchozí vůz do formulářů
-    is_admin      INTEGER NOT NULL DEFAULT 0 CHECK (is_admin IN (0, 1)),
-    created_at    TEXT    NOT NULL
+-- Katalog modelů vozidel: typ pohonu (BR-04) a maximální DC nabíjecí výkon (BR-06, 0 = umí jen AC).
+CREATE TABLE IF NOT EXISTS vehicle_models (
+    id           INTEGER PRIMARY KEY,
+    name         TEXT    NOT NULL UNIQUE,
+    vehicle_type TEXT    NOT NULL CHECK (vehicle_type IN ('BEV', 'PHEV')),
+    max_dc_kw    INTEGER NOT NULL CHECK (max_dc_kw >= 0)
 );
 
--- is_high_speed = HPC (BR-04: jen BEV); power_kw >= 50 = DC/HPC (BR-06: vyžaduje schválení).
+CREATE TABLE IF NOT EXISTS users (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    username         TEXT    NOT NULL UNIQUE COLLATE NOCASE,
+    password_hash    TEXT    NOT NULL,
+    vehicle_model_id INTEGER NOT NULL REFERENCES vehicle_models (id),  -- výchozí vozidlo do formulářů
+    is_admin         INTEGER NOT NULL DEFAULT 0 CHECK (is_admin IN (0, 1)),
+    created_at       TEXT    NOT NULL
+);
+
+-- is_high_speed = HPC (BR-04: jen BEV); power_kw >= 50 = rychlá stanice DC/HPC (BR-06: připuštění podle výkonu vozidla).
 CREATE TABLE IF NOT EXISTS stations (
     id            INTEGER PRIMARY KEY,
     name          TEXT    NOT NULL UNIQUE,
@@ -27,7 +35,7 @@ CREATE TABLE IF NOT EXISTS reservations (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id           INTEGER NOT NULL REFERENCES users (id),
     station_id        INTEGER NOT NULL REFERENCES stations (id),
-    vehicle_type      TEXT    NOT NULL CHECK (vehicle_type IN ('BEV', 'PHEV')),
+    vehicle_model_id  INTEGER NOT NULL REFERENCES vehicle_models (id),
     license_plate     TEXT    NOT NULL CHECK (length(trim(license_plate)) > 0),
     start_time        TEXT    NOT NULL CHECK (length(start_time) = 16 AND substr(start_time, 15, 2) IN ('00', '30')),
     end_time          TEXT    NOT NULL CHECK (length(end_time) = 16 AND substr(end_time, 15, 2) IN ('00', '30')),
@@ -37,7 +45,7 @@ CREATE TABLE IF NOT EXISTS reservations (
     created_at        TEXT    NOT NULL,
     updated_at        TEXT    NOT NULL,
     draft_expires_at  TEXT    NOT NULL,  -- BR-05: created_at + 5 min
-    approval_deadline TEXT,              -- BR-06: start_time − 15 min (jen DC/HPC po potvrzení)
+    approval_deadline TEXT,              -- BR-06: start_time − 15 min (jen žádost o výjimku)
     CHECK (start_time < end_time),
     CHECK (state <> 'PENDING_APPROVAL' OR approval_deadline IS NOT NULL)
 );
@@ -83,20 +91,27 @@ BEGIN
 END;
 
 -- BR-04: vysokorychlostní (HPC) stanice smí rezervovat pouze BEV, ne plug-in hybrid.
-CREATE TRIGGER IF NOT EXISTS trg_reservations_high_speed_insert
+-- BR-06: na rychlou stanici (>= 50 kW) smí jen vozidlo, které umí nabíjet stejnosměrně (max_dc_kw > 0).
+CREATE TRIGGER IF NOT EXISTS trg_reservations_vehicle_insert
 BEFORE INSERT ON reservations
-WHEN NEW.vehicle_type <> 'BEV'
- AND (SELECT is_high_speed FROM stations WHERE id = NEW.station_id) = 1
 BEGIN
-    SELECT RAISE(ABORT, 'HIGH_SPEED_BEV_ONLY');
+    SELECT RAISE(ABORT, 'HIGH_SPEED_BEV_ONLY')
+    WHERE (SELECT is_high_speed FROM stations WHERE id = NEW.station_id) = 1
+      AND (SELECT vehicle_type FROM vehicle_models WHERE id = NEW.vehicle_model_id) <> 'BEV';
+    SELECT RAISE(ABORT, 'DC_NOT_SUPPORTED')
+    WHERE (SELECT power_kw FROM stations WHERE id = NEW.station_id) >= 50
+      AND (SELECT max_dc_kw FROM vehicle_models WHERE id = NEW.vehicle_model_id) = 0;
 END;
 
-CREATE TRIGGER IF NOT EXISTS trg_reservations_high_speed_update
-BEFORE UPDATE OF station_id, vehicle_type ON reservations
-WHEN NEW.vehicle_type <> 'BEV'
- AND (SELECT is_high_speed FROM stations WHERE id = NEW.station_id) = 1
+CREATE TRIGGER IF NOT EXISTS trg_reservations_vehicle_update
+BEFORE UPDATE OF station_id, vehicle_model_id ON reservations
 BEGIN
-    SELECT RAISE(ABORT, 'HIGH_SPEED_BEV_ONLY');
+    SELECT RAISE(ABORT, 'HIGH_SPEED_BEV_ONLY')
+    WHERE (SELECT is_high_speed FROM stations WHERE id = NEW.station_id) = 1
+      AND (SELECT vehicle_type FROM vehicle_models WHERE id = NEW.vehicle_model_id) <> 'BEV';
+    SELECT RAISE(ABORT, 'DC_NOT_SUPPORTED')
+    WHERE (SELECT power_kw FROM stations WHERE id = NEW.station_id) >= 50
+      AND (SELECT max_dc_kw FROM vehicle_models WHERE id = NEW.vehicle_model_id) = 0;
 END;
 
 -- Povolené přechody stavů (stavový diagram v0.2):
@@ -115,16 +130,18 @@ BEGIN
     SELECT RAISE(ABORT, 'INVALID_STATE_TRANSITION');
 END;
 
--- BR-06: potvrzení DRAFT vede na AC stanici (< 50 kW) rovnou do CONFIRMED,
--- na DC/HPC stanici (>= 50 kW) pouze do PENDING_APPROVAL.
+-- BR-06: potvrzení DRAFT vede do CONFIRMED, pokud je stanice AC (< 50 kW) nebo vozidlo nabíjí aspoň
+-- polovinou výkonu stanice; slabší vozidlo na rychlé stanici smí jen do PENDING_APPROVAL (žádost o výjimku).
 CREATE TRIGGER IF NOT EXISTS trg_reservations_approval_policy
 BEFORE UPDATE OF state ON reservations
-WHEN OLD.state = 'DRAFT' AND (
-       (NEW.state = 'CONFIRMED'        AND (SELECT power_kw FROM stations WHERE id = NEW.station_id) >= 50)
-    OR (NEW.state = 'PENDING_APPROVAL' AND (SELECT power_kw FROM stations WHERE id = NEW.station_id) < 50)
-)
+WHEN OLD.state = 'DRAFT' AND NEW.state IN ('CONFIRMED', 'PENDING_APPROVAL')
+ AND (NEW.state = 'PENDING_APPROVAL') <> (
+        (SELECT power_kw FROM stations WHERE id = NEW.station_id) >= 50
+    AND (SELECT max_dc_kw FROM vehicle_models WHERE id = NEW.vehicle_model_id) * 2
+        < (SELECT power_kw FROM stations WHERE id = NEW.station_id)
+ )
 BEGIN
     SELECT RAISE(ABORT, 'APPROVAL_REQUIRED');
 END;
 
-PRAGMA user_version = 2;
+PRAGMA user_version = 3;

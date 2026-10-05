@@ -2,25 +2,22 @@
 skinparam defaultFontName Arial
 title OP-01 Check Availability + OP-02 Create Reservation (v0.2)
 start
-:Uživatel zadá časový interval, typ vozu a SPZ;
+#FFF3C4:Uživatel zadá časový interval, vozidlo z katalogu a SPZ;
 if (Interval zarovnán na 30 min a v budoucnu? (BR-01)) then (ano)
-  if (Typ vozu == PHEV?) then (ano)
-    :Vyloučit vysokorychlostní stanice HPC (BR-04);
-  else (ne)
-    :Zahrnout všechny stanice (AC, DC, HPC);
-  endif
+  #FFF3C4:Vyloučit stanice, které vozidlo nesmí použít:
+  HPC pro PHEV (BR-04), DC/HPC pro vozidlo bez DC (BR-06);
   #FFF3C4:OP-01: Vyhledat stanice bez překryvu
   s CONFIRMED nebo PENDING_APPROVAL (BR-02 v0.2);
-  #FFF3C4:Zobrazit seznam volných stanic
-  (DC/HPC označit „vyžaduje schválení“, BR-06);
+  #FFF3C4:Zobrazit seznam volných stanic; u rychlých stanic
+  „automaticky“ nebo „jen s výjimkou“ podle výkonu vozidla (BR-06);
   :Uživatel vybere konkrétní stanici;
-  if (Kompatibilita vozu a vybrané stanice? (BR-04)) then (ano)
+  #FFF3C4:if (Vozidlo smí na vybranou stanici? (BR-04, BR-06)) then (ano)
     :OP-02: Vytvořit rezervaci ve stavu DRAFT;
     :Nastavit expiraci na 5 minut (BR-05);
     :Vrátit reservationId uživateli;
     stop
   else (ne)
-    :Chyba: PHEV nesmí rezervovat HPC;
+    :Chyba: vozidlo na stanici nesmí;
     stop
   endif
 else (ne)

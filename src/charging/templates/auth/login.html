@@ -1,14 +1,16 @@
 {% extends "base.html" %}
 {% block title %}Přihlášení{% endblock %}
 {% block content %}
-<section class="card form-card narrow">
+<section class="narrow">
   <h1>Přihlášení</h1>
-  <form method="post" class="form-col">
+  <form method="post">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <label>Uživatelské jméno <input name="username" value="{{ username }}" required autofocus autocomplete="username"></label>
-    <label>Heslo <input type="password" name="password" required autocomplete="current-password"></label>
-    <button class="btn">Přihlásit</button>
+    <label class="field" for="l-user"><span>Uživatelské jméno</span>
+      <input id="l-user" name="username" value="{{ username }}" required autofocus autocomplete="username"></label>
+    <label class="field" for="l-pass"><span>Heslo</span>
+      <input id="l-pass" type="password" name="password" required autocomplete="current-password"></label>
+    <div><button class="btn">Přihlásit</button></div>
   </form>
-  <p class="muted">Nemáte účet? <a href="{{ url_for('auth.register') }}">Zaregistrujte se.</a></p>
+  <p class="note">Nemáte účet? <a href="{{ url_for('auth.register') }}">Zaregistrujte se.</a></p>
 </section>
 {% endblock %}

@@ -1,24 +1,57 @@
-{% macro state_badge(state) -%}
-  {%- set labels = {
-    'DRAFT': 'Návrh',
-    'PENDING_APPROVAL': 'Čeká na schválení',
-    'CONFIRMED': 'Potvrzená',
-    'CANCELLED': 'Zrušená',
-    'CANCELLED_BY_ADMIN': 'Zrušená administrátorem',
-    'REJECTED': 'Zamítnutá',
-    'EXPIRED': 'Propadlá',
+{# Stav rezervace: lidský popis, barva podle semaforu a kód stavu ze specifikace. #}
+{% macro state(code) -%}
+  {%- set states = {
+    'DRAFT': ('Návrh', 'off'),
+    'PENDING_APPROVAL': ('Čeká na schválení', 'wait'),
+    'CONFIRMED': ('Potvrzená', 'ok'),
+    'CANCELLED': ('Zrušená', 'off'),
+    'CANCELLED_BY_ADMIN': ('Zrušil administrátor', 'bad'),
+    'REJECTED': ('Zamítnutá', 'bad'),
+    'EXPIRED': ('Propadlá', 'off'),
   } -%}
-  <span class="badge state-{{ state|lower }}">{{ state }} · {{ labels[state] }}</span>
+  <span class="lamp {{ states[code][1] }}">{{ states[code][0] }}</span>
+  <span class="status-code">{{ code }}</span>
 {%- endmacro %}
 
-{% macro station_status(status) -%}
-  {%- set labels = {'FREE': 'Volná', 'RESERVED': 'Rezervovaná', 'PENDING': 'Čeká na schválení', 'IN_USE': 'Aktuálně používaná', 'PAST': 'Nedostupné'} -%}
-  <span class="badge slot-{{ status|lower }}">{{ labels[status] }}</span>
+{# Stav stání na parkovišti právě teď. #}
+{% macro lamp(status) -%}
+  {%- set labels = {'FREE': ('Volno', 'ok'), 'RESERVED': ('Rezervace', 'bad'), 'PENDING': ('Čeká na schválení', 'wait'), 'IN_USE': ('Nabíjí se', 'bad')} -%}
+  <span class="lamp {{ labels[status][1] }}">{{ labels[status][0] }}</span>
 {%- endmacro %}
 
-{% macro station_tags(is_high_speed, needs_approval) -%}
-  {% if is_high_speed %}<span class="badge hpc-badge">⚡ HPC · jen BEV</span>{% endif %}
-  {% if needs_approval %}<span class="badge approval-badge">Vyžaduje schválení</span>{% endif %}
+{# SPZ vykreslená jako česká registrační značka. #}
+{% macro plate(number) -%}
+  <span class="plate" title="SPZ {{ number }}"><span class="plate-eu" aria-hidden="true">CZ</span><span class="plate-no">{{ number }}</span></span>
+{%- endmacro %}
+
+{# Pravidla stání: HPC jen BEV (BR-04), rychlá stanice automaticky pro vozidlo od poloviny jejího výkonu (BR-06). #}
+{% macro rules(is_high_speed, min_kw) -%}
+  {%- if is_high_speed or min_kw -%}
+  <span class="tags">
+    {%- if is_high_speed %}<span class="tag hpc">jen BEV</span>{% endif -%}
+    {%- if min_kw %}<span class="tag approval">vozidlo od {{ min_kw }} kW</span>{% endif -%}
+  </span>
+  {%- endif -%}
+{%- endmacro %}
+
+{# Výběr vozidla z katalogu; u každého modelu jeho max. DC nabíjecí výkon. #}
+{% macro vehicle_select(models, selected, id) -%}
+  <select name="vehicle_model_id" id="{{ id }}" required>
+    <optgroup label="Elektromobily (BEV)">
+      {%- for m in models if m.vehicle_type == 'BEV' %}<option value="{{ m.id }}"{% if m.id == selected %} selected{% endif %}>{{ m.name }} · {{ m.max_dc_kw }} kW DC</option>{% endfor -%}
+    </optgroup>
+    <optgroup label="Plug-in hybridy (PHEV)">
+      {%- for m in models if m.vehicle_type == 'PHEV' %}<option value="{{ m.id }}"{% if m.id == selected %} selected{% endif %}>{{ m.name }} · {% if m.max_dc_kw %}{{ m.max_dc_kw }} kW DC{% else %}jen AC{% endif %}</option>{% endfor -%}
+    </optgroup>
+  </select>
+{%- endmacro %}
+
+{# "AC 01" -> ("AC", "01") #}
+{% macro bay_no(name) -%}{{ name.split(' ')[1] }}{%- endmacro %}
+{% macro bay_kind(name) -%}{{ name.split(' ')[0] }}{%- endmacro %}
+
+{% macro station_cell(r) -%}
+  <span class="station-cell"><strong>{{ r.station_name }}</strong><small class="mono">{{ r.power_kw }} kW</small></span>
 {%- endmacro %}
 
 {% macro action_button(endpoint, reservation_id, label, style='', next='') -%}

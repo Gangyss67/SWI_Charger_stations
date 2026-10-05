@@ -41,10 +41,10 @@ def svc(conn, clock):
     return ReservationService(conn, NotificationService(conn, DatabaseChannel(conn, clock)), clock)
 
 
-def make_user(conn, username: str, vehicle_type: str = "BEV", is_admin: bool = False) -> int:
+def make_user(conn, username: str, vehicle_model_id: int = 1, is_admin: bool = False) -> int:
     cur = conn.execute(
-        "INSERT INTO users (username, password_hash, vehicle_type, is_admin, created_at) VALUES (?, 'x', ?, ?, ?)",
-        (username, vehicle_type, int(is_admin), format_ts(datetime.now())),
+        "INSERT INTO users (username, password_hash, vehicle_model_id, is_admin, created_at) VALUES (?, 'x', ?, ?, ?)",
+        (username, vehicle_model_id, int(is_admin), format_ts(datetime.now())),
     )
     return cur.lastrowid
 

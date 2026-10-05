@@ -6,12 +6,12 @@ skinparam state {
 }
 hide empty description
 state DRAFT : Platnost max. 5 minut\nNeblokuje stanici
-state PENDING_APPROVAL <<new>> : Podmíněně blokuje stanici\nRozhodnout do T_start − 15 min
+state PENDING_APPROVAL <<new>> : Žádost o výjimku\nPodmíněně blokuje stanici\nRozhodnout do T_start − 15 min
 state CONFIRMED : Exkluzivně blokuje stanici
 state REJECTED <<new>>
-[*] --> DRAFT : OP-02 Create\n[validní interval\na kompatibilita vozu]
-DRAFT --> CONFIRMED : OP-03 Confirm\n[AC stanice, bez kolize]
-DRAFT --> PENDING_APPROVAL : OP-03 Confirm\n[DC/HPC, bez kolize,\nT_nyní ≤ T_start − 15 min]
+[*] --> DRAFT : OP-02 Create\n[validní interval, vozidlo z katalogu\nsmí na stanici (BR-04, BR-06)]
+DRAFT --> CONFIRMED : OP-03 Confirm\n[AC, nebo vozidlo ≥ ½ výkonu\nstanice; bez kolize]
+DRAFT --> PENDING_APPROVAL : OP-03 Confirm\n[DC/HPC a vozidlo < ½ výkonu,\nbez kolize, T_nyní ≤ T_start − 15 min]
 DRAFT --> EXPIRED : [T_nyní > vytvoření + 5 min]\n(BR-05)
 PENDING_APPROVAL --> CONFIRMED : OP-05 Approve\n[Admin, T_nyní ≤ T_start − 15 min]
 PENDING_APPROVAL --> REJECTED : OP-05 Reject\n[Admin]

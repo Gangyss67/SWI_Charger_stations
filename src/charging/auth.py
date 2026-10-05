@@ -10,7 +10,6 @@ from flask import Blueprint, abort, flash, g, jsonify, redirect, render_template
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from .db import get_db
-from .services.reservations import VEHICLE_BEV, VEHICLE_PHEV
 from .timeutil import format_ts
 
 bp = Blueprint("auth", __name__)
@@ -27,7 +26,9 @@ def load_logged_in_user():
     user_id = session.get("user_id")
     if user_id is not None:
         g.user = get_db().execute(
-            "SELECT id, username, vehicle_type, is_admin FROM users WHERE id = ?", (user_id,)
+            "SELECT u.id, u.username, u.vehicle_model_id, u.is_admin, vm.name AS vehicle_name"
+            " FROM users u JOIN vehicle_models vm ON vm.id = u.vehicle_model_id WHERE u.id = ?",
+            (user_id,),
         ).fetchone()
         if g.user is None:
             session.clear()
@@ -61,13 +62,14 @@ def admin_required(view):
 def register():
     if g.user is not None:
         return redirect(url_for("main.index"))
-    form = {"username": "", "vehicle_type": VEHICLE_BEV}
+    models = get_db().execute("SELECT * FROM vehicle_models ORDER BY vehicle_type, max_dc_kw DESC, name").fetchall()
+    form = {"username": "", "vehicle_model_id": None}
     if request.method == "POST":
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
         password_again = request.form.get("password_again", "")
-        vehicle_type = request.form.get("vehicle_type", "")
-        form = {"username": username, "vehicle_type": vehicle_type}
+        vehicle_model_id = request.form.get("vehicle_model_id", type=int)
+        form = {"username": username, "vehicle_model_id": vehicle_model_id}
 
         error = None
         if not USERNAME_RE.match(username):
@@ -76,15 +78,15 @@ def register():
             error = f"Heslo musí mít alespoň {MIN_PASSWORD_LENGTH} znaků."
         elif password != password_again:
             error = "Hesla se neshodují."
-        elif vehicle_type not in (VEHICLE_BEV, VEHICLE_PHEV):
-            error = "Vyberte typ vozidla."
+        elif vehicle_model_id not in {m["id"] for m in models}:
+            error = "Vyberte své vozidlo z katalogu."
 
         if error is None:
             try:
                 get_db().execute(
-                    "INSERT INTO users (username, password_hash, vehicle_type, is_admin, created_at)"
+                    "INSERT INTO users (username, password_hash, vehicle_model_id, is_admin, created_at)"
                     " VALUES (?, ?, ?, 0, ?)",
-                    (username, generate_password_hash(password), vehicle_type, format_ts(datetime.now())),
+                    (username, generate_password_hash(password), vehicle_model_id, format_ts(datetime.now())),
                 )
             except sqlite3.IntegrityError:
                 error = "Toto uživatelské jméno je již obsazené."
@@ -92,7 +94,7 @@ def register():
                 flash("Registrace proběhla úspěšně, můžete se přihlásit.", "success")
                 return redirect(url_for("auth.login"))
         flash(error, "error")
-    return render_template("auth/register.html", form=form)
+    return render_template("auth/register.html", form=form, models=models)
 
 
 @bp.route("/login", methods=("GET", "POST"))

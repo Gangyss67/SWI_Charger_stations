@@ -3,26 +3,32 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}Nabíjecí stanice{% endblock %} · ChargeBook</title>
+  <title>{% block title %}Parkoviště{% endblock %} · ChargeBook</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
 <header class="topbar">
   <div class="wrap topbar-inner">
-    <a class="brand" href="{{ url_for('main.index') }}">⚡ ChargeBook</a>
-    <nav>
-      <a href="{{ url_for('main.index') }}">Stanice</a>
+    <a class="brand" href="{{ url_for('main.index') }}" aria-label="ChargeBook – parkoviště">
+      <span class="brand-sign" aria-hidden="true">P</span>
+      <span class="brand-name">ChargeBook</span>
+    </a>
+    <nav class="nav">
+      <a href="{{ url_for('main.index') }}"{% if request.endpoint in ('main.index', 'main.station_detail') %} aria-current="page"{% endif %}>Parkoviště</a>
       {% if g.user %}
-        <a href="{{ url_for('main.my_reservations') }}">Moje rezervace</a>
-        {% if g.user.is_admin %}<a href="{{ url_for('main.admin_reservations') }}">Schvalování{% if pending_approvals %} <span class="badge-count">{{ pending_approvals }}</span>{% endif %}</a>{% endif %}
-        <a href="{{ url_for('main.notifications_page') }}">Notifikace{% if unread_notifications %} <span class="badge-count">{{ unread_notifications }}</span>{% endif %}</a>
-        <span class="who">{{ g.user.username }} · {{ g.user.vehicle_type }}{% if g.user.is_admin %} · admin{% endif %}</span>
+        <a href="{{ url_for('main.my_reservations') }}"{% if request.endpoint == 'main.my_reservations' %} aria-current="page"{% endif %}>Moje rezervace</a>
+        {% if g.user.is_admin %}<a href="{{ url_for('main.admin_reservations') }}"{% if request.endpoint == 'main.admin_reservations' %} aria-current="page"{% endif %}>Schvalování{% if pending_approvals %}<span class="count">{{ pending_approvals }}</span>{% endif %}</a>{% endif %}
+        <a href="{{ url_for('main.notifications_page') }}"{% if request.endpoint == 'main.notifications_page' %} aria-current="page"{% endif %}>Notifikace{% if unread_notifications %}<span class="count">{{ unread_notifications }}</span>{% endif %}</a>
+        <span class="who">{{ g.user.username }}{% if g.user.is_admin %}, administrátor{% endif %}</span>
         <form method="post" action="{{ url_for('auth.logout') }}" class="inline">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <button class="link">Odhlásit</button>
         </form>
       {% else %}
-        <a href="{{ url_for('auth.login') }}">Přihlásit</a>
+        <a href="{{ url_for('auth.login') }}"{% if request.endpoint == 'auth.login' %} aria-current="page"{% endif %}>Přihlásit</a>
         <a class="btn small" href="{{ url_for('auth.register') }}">Registrace</a>
       {% endif %}
     </nav>
@@ -30,9 +36,11 @@
 </header>
 <main class="wrap">
   {% with messages = get_flashed_messages(with_categories=true) %}
-    {% for category, message in messages %}
-      <div class="flash {{ category }}">{{ message }}</div>
-    {% endfor %}
+    {% if messages %}
+    <div class="stack" role="status">
+      {% for category, message in messages %}<div class="flash {{ category }}">{{ message }}</div>{% endfor %}
+    </div>
+    {% endif %}
   {% endwith %}
   {% block content %}{% endblock %}
 </main>
