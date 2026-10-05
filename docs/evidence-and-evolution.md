@@ -76,6 +76,7 @@ Shrnutí dopadu změny:
 - Životní cyklus rozšířen o PENDING_APPROVAL a REJECTED, EXPIRED nově i pro nerozhodnuté žádosti.
 - OP-03 se větví podle výkonu stanice (AC × DC/HPC), OP-01 a OP-04 nově pracují s PENDING_APPROVAL.
 - V aplikaci: endpointy confirm/approve/reject, fronta schvalování, DB triggery `BLOCKING_OVERLAP`, `APPROVAL_REQUIRED` a přechody stavů v0.2.
+- UI přepracované (parkoviště jako řada stání, časová osa dne, SPZ jako česká značka, světlý i tmavý režim); logika baseline se tím nemění.
 
 Zbývající předpoklad / neznámá:
 - Expirace (BR-05, BR-06) je zatím „líná“ – zapíše se až při nejbližším požadavku na aplikaci a o propadnutí žádosti se žadatel nedozví notifikací. Pro C02 to stačí, řešení patří do C03 (AD-1).
@@ -89,4 +90,4 @@ Architektonické drivery přenesené do C03:
 - AD-4 Autorizace podle role a dohledatelnost: OP-05 je první operace jen pro Admina – kontrola na serveru u každé operace; kdo a kdy rozhodl, se zatím neukládá.
 
 Commit / tag aplikace:
-- větev `c02-baseline-v0.2`, commit `3080b2a`, tag `v0.2.1` (předchozí `v0.2.0` = `c5178c9` ještě se sloučeným „Vytvořit a potvrdit“ v UI)
+- větev `c02-baseline-v0.2`, commit `578c0a6`, tag `v0.2.3` (stejná logika jako `v0.2.1`, nové UI; `v0.2.2` byl zamítnutý pokus s připouštěním podle výkonu vozidla, není součástí baseline)
