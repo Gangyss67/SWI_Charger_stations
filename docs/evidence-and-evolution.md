@@ -1,3 +1,5 @@
+# CV1 (C01)
+
 # C01 Engineering Spike
 
 Varianta: **A – Persistence** (Reservation → skutečná DB → načtení → ověření)
@@ -32,6 +34,10 @@ Decision / what changes because of the result:
 - Časy ukládáme jako řetězec `YYYY-MM-DD HH:MM`; porovnání řetězců v SQL se ve spiku chovalo správně, takže nepotřebujeme převod na epoch.
 - Seed data musí splňovat stejné validace jako uživatelský vstup (poučení z vedlejšího zjištění).
 - Riziko pro budoucnost: SQLite povoluje jednoho zapisujícího – souvisí s vybranou future pressure Q (viz `intent-and-change.md`).
+
+---
+
+# CV2 (C02)
 
 ## Evidence C02: specifikace → běžící aplikace
 
@@ -91,6 +97,10 @@ Architektonické drivery přenesené do C03:
 
 Commit / tag aplikace:
 - větev `c02-baseline-v0.2`, commit `578c0a6`, tag `v0.2.3` (stejná logika jako `v0.2.1`, nové UI; `v0.2.2` byl zamítnutý pokus s připouštěním podle výkonu vozidla, není součástí baseline)
+
+---
+
+# CV3 (C03)
 
 ## C03 — Architecture Evidence
 

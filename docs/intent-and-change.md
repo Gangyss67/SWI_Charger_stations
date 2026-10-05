@@ -1,5 +1,7 @@
 # Project Frame
 
+*CV1 (C01). V CV2 (C02) upraveno podle baseline v0.2: Users / Stakeholders, Core concepts, Core operations, Persistent state, State-changing operation a Common business rule.*
+
 ## Reservation domain
 Charging stations on a parking lot, reserved in 30-minute time slots.
 
