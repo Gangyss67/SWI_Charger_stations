@@ -104,3 +104,4 @@ td.actions form + form { margin-left: 6px; }
 .ok-text { color: var(--free-text); }
 .off-text { color: var(--inuse-text); }
 tr.row-off td { color: var(--muted); }
+.step { font-size: 1rem; margin: 14px 0 8px; }

@@ -57,13 +57,10 @@
       </select>
     </label>
     <label>SPZ <input name="license_plate" value="{{ license_plate }}" maxlength="12" placeholder="1AB 2345" required></label>
-    <div class="buttons">
-      <button class="btn ghost" name="action" value="draft">Vytvořit návrh</button>
-      <button class="btn" name="action" value="confirm">Vytvořit a potvrdit</button>
-    </div>
+    <div class="buttons"><button class="btn">Vytvořit návrh</button></div>
   </form>
   <p class="muted"><small>
-    Návrh (DRAFT) stanici neblokuje a platí 5 minut – do té doby ho potvrďte.
+    Vytvoří se návrh (DRAFT), který stanici neblokuje a platí 5 minut – do té doby ho v sekci Moje rezervace potvrďte.
     {% if needs_approval %}
       Tato stanice má výkon ≥ 50 kW: potvrzením vznikne žádost <strong>PENDING_APPROVAL</strong>, která termín blokuje,
       a administrátor ji musí schválit nejpozději 15 minut před začátkem, jinak propadne.

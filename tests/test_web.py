@@ -163,28 +163,51 @@ def test_cp1_validation_errors(client):
 # ------------------------------------------------------------------ OP-03 + OP-05 přes HTTP
 
 
-def test_form_flow_ac_station_is_confirmed_immediately(client, app):
-    as_phev(client)
-    r = client.post(
+def form_create(client, station_id, vehicle_type, slots=1):
+    """OP-02 přes formulář (stejná pole jako krok 1 + výběr stanice z kroku 2)."""
+    return client.post(
         "/reservations",
-        data={"station_id": 1, "date": DAY, "time": "10:00", "slots": 1, "vehicle_type": "PHEV",
-              "license_plate": PLATE, "action": "confirm", "csrf_token": TOKEN},
+        data={"station_id": station_id, "date": DAY, "time": "10:00", "slots": slots, "vehicle_type": vehicle_type,
+              "license_plate": PLATE, "csrf_token": TOKEN},
         follow_redirects=True,
     )
+
+
+def test_index_flow_matches_activity_diagram_op01_op02(client, app):
+    """Krok 1: interval, typ vozu a SPZ -> krok 2: seznam volných stanic (PHEV bez HPC) -> OP-02 návrh."""
+    query = f"/?date={DAY}&time=10:00&slots=2&license_plate=1AB+2345"
+    assert 'name="license_plate"' not in client.get(query).get_data(as_text=True)  # SPZ až pro OP-02 (přihlášení)
+    as_ev(client)
+    rid = create(client, 8).get_json()["id"]
+    api_post(client, f"/reservations/{rid}/confirm")  # HPC 08 [10:00, 11:00) -> PENDING_APPROVAL
+
+    page = client.get(query + "&vehicle_type=BEV").get_data(as_text=True)
+    assert 'name="license_plate"' in page and "required" in page
+    assert page.count("Vytvořit návrh</button>") == 9  # HPC 08 je blokovaná žádostí
+    as_phev(client)
+    page = client.get(query + "&vehicle_type=PHEV").get_data(as_text=True)
+    assert page.count("Vytvořit návrh</button>") == 7 and "vyloučeny (BR-04)" in page
+
+    r = form_create(client, 1, "PHEV")  # výběr AC 01 ze seznamu -> jen DRAFT, potvrzení je OP-03
+    assert "vytvořen (DRAFT)" in r.get_data(as_text=True)
+    assert db_rows(app, "SELECT state FROM reservations WHERE station_id = 1")[0]["state"] == "DRAFT"
+
+
+def test_form_flow_ac_station_create_then_confirm(client, app):
+    as_phev(client)
+    form_create(client, 1, "PHEV")
+    rid = db_rows(app, "SELECT id FROM reservations")[0]["id"]
+    r = client.post(f"/reservations/{rid}/confirm", data={"csrf_token": TOKEN}, follow_redirects=True)
     assert "je potvrzena (CONFIRMED)" in r.get_data(as_text=True)
     assert db_rows(app, "SELECT state FROM reservations")[0]["state"] == "CONFIRMED"
 
 
 def test_form_flow_hpc_request_blocks_slot_and_admin_approves(client, app):
     as_ev(client)
-    r = client.post(
-        "/reservations",
-        data={"station_id": 8, "date": DAY, "time": "10:00", "slots": 2, "vehicle_type": "BEV",
-              "license_plate": PLATE, "action": "confirm", "csrf_token": TOKEN},
-        follow_redirects=True,
-    )
-    assert "PENDING_APPROVAL" in r.get_data(as_text=True)
+    form_create(client, 8, "BEV", slots=2)
     rid = db_rows(app, "SELECT id FROM reservations")[0]["id"]
+    r = client.post(f"/reservations/{rid}/confirm", data={"csrf_token": TOKEN}, follow_redirects=True)
+    assert "PENDING_APPROVAL" in r.get_data(as_text=True)
 
     as_admin(client)  # jiný uživatel: slot je v OP-01 nedostupný
     assert availability(client, 8, time="10:30")["reason"] == "PENDING_APPROVAL"

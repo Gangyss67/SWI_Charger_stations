@@ -75,7 +75,9 @@ def inject_pending_approvals():
 
 @bp.route("/")
 def index():
-    """Přehled stanic + OP-01: vyhledání volných stanic pro interval a typ vozu."""
+    """Přehled stanic + tok z aktivitního diagramu OP-01/OP-02: uživatel zadá interval, typ vozu a SPZ,
+    systém zobrazí seznam volných stanic (PHEV bez HPC), uživatel vybere stanici a vytvoří návrh.
+    Dostupnost (OP-01) se počítá jen z intervalu a typu vozu, SPZ se použije až v OP-02."""
     svc = _service()
     now = svc.now()
     suggested = ceil_to_slot(now + timedelta(minutes=30))
@@ -86,18 +88,21 @@ def index():
         "vehicle_type": request.args.get("vehicle_type") or _default_vehicle(),
         "license_plate": request.args.get("license_plate", ""),
     }
-    results = None
+    free_stations = None
     if "time" in request.args:
         try:
             start = parse_slot_start(form["date"], form["time"])
             results = svc.search_availability(start, form["slots"], form["vehicle_type"])
         except ReservationError as exc:
             flash(str(exc), "error")
+        else:
+            free_stations = [r for r in results if r["available"]]
     return render_template(
         "index.html",
         stations=svc.stations_overview(),
         form=form,
-        results=results,
+        free_stations=free_stations,
+        hpc_excluded=form["vehicle_type"] != VEHICLE_BEV,
         time_options=time_options(),
         max_slots=MAX_SLOTS,
         vehicle_types=VEHICLE_TYPES,
@@ -156,8 +161,8 @@ def _confirm_message(svc: ReservationService, reservation_id: int, state: str) -
 @bp.post("/reservations")
 @login_required
 def create_reservation():
-    """OP-02 Create. JSON {station_id, date, time, slots, vehicle_type, license_plate} -> 201 + rezervace.
-    Formulář s action=confirm navíc rovnou provede OP-03."""
+    """OP-02 Create -> DRAFT. JSON {station_id, date, time, slots, vehicle_type, license_plate} -> 201 + rezervace.
+    Potvrzení (OP-03) je samostatná akce uživatele."""
     svc = _service()
     if request.is_json:
         data = request.get_json(silent=True)
@@ -201,19 +206,12 @@ def create_reservation():
         flash(str(exc), "error")
         return redirect(url_for("main.station_detail", station_id=station_id, **fields))
 
-    if request.form.get("action") == "confirm":
-        try:
-            state = svc.confirm(g.user["id"], reservation_id)
-        except ReservationError as exc:
-            flash(f"Návrh #{reservation_id} je uložen (DRAFT), ale potvrzení bylo odmítnuto: {exc}", "error")
-        else:
-            flash(_confirm_message(svc, reservation_id, state), "success")
-    else:
-        expires = svc.get_reservation(reservation_id)["draft_expires_at"][11:]
-        flash(
-            f"Návrh #{reservation_id} vytvořen (DRAFT). Potvrďte ho do {expires}, jinak propadne (BR-05).",
-            "success",
-        )
+    expires = svc.get_reservation(reservation_id)["draft_expires_at"][11:]
+    flash(
+        f"Návrh rezervace #{reservation_id} vytvořen (DRAFT), platí do {expires}. "
+        f"Potvrďte ho tlačítkem Potvrdit, jinak propadne (BR-05).",
+        "success",
+    )
     return redirect(url_for("main.my_reservations"))
 
 

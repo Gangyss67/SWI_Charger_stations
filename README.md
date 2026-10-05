@@ -68,9 +68,9 @@ Typ vozidla u účtu je jen výchozí hodnota – typ vozu a SPZ se zadávají u
 
 | Metoda | URL | Operace |
 | --- | --- | --- |
-| GET | `/?date=&time=&slots=&vehicle_type=` | přehled stanic + OP-01 vyhledání volných stanic |
+| GET | `/?date=&time=&slots=&vehicle_type=&license_plate=` | přehled stanic + „Nová rezervace“ podle aktivitního diagramu OP-01/02: krok 1 interval, typ vozu, SPZ → krok 2 seznam volných stanic (OP-01) → „Vytvořit návrh“ (OP-02) |
 | GET | `/stations/<id>?date=YYYY-MM-DD` | dostupnost po slotech + formulář rezervace |
-| POST | `/reservations` | OP-02 create (formulář nebo JSON); formulář s `action=confirm` provede i OP-03 |
+| POST | `/reservations` | OP-02 create → DRAFT (formulář nebo JSON); potvrzení je samostatná akce OP-03 |
 | POST | `/reservations/<id>/confirm` | OP-03 DRAFT → CONFIRMED (AC) / PENDING_APPROVAL (DC/HPC) |
 | POST | `/reservations/<id>/cancel` | OP-04 → CANCELLED / CANCELLED_BY_ADMIN |
 | POST | `/reservations/<id>/approve` | OP-05 PENDING_APPROVAL → CONFIRMED (admin) |

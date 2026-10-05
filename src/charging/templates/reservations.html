@@ -18,14 +18,14 @@
       <td>{{ r.start_time|timerange(r.end_time) }}</td>
       <td>{{ r.vehicle_type }} <small class="muted">{{ r.license_plate }}</small></td>
       <td>{{ state_badge(r.state) }} {% if r.usage %}<small class="muted">{{ r.usage }}</small>{% endif %}
-        {% if r.state == 'DRAFT' and r.can_confirm %}<br><small class="muted">Potvrďte do {{ r.draft_expires_at[11:] }}</small>{% endif %}
+        {% if r.state == 'DRAFT' and r.can_confirm %}<br><small class="muted">Potvrďte do {{ r.draft_expires_at[11:] }}{% if r.requires_approval %} – potvrzením odešlete žádost ke schválení{% endif %}</small>{% endif %}
         {% if r.confirm_blocked %}<br><small class="warn">{{ r.confirm_blocked }}</small>{% endif %}
         {% if r.state == 'DRAFT' and r.has_conflict %}<br><small class="warn">Termín je mezitím obsazený – potvrzení by bylo odmítnuto</small>{% endif %}
         {% if r.state == 'PENDING_APPROVAL' %}<br><small class="muted">Rozhodnutí admina nejpozději {{ r.approval_deadline[:16] }}</small>{% endif %}
         {% if r.state == 'CONFIRMED' and not g.user.is_admin and r.user_can_cancel %}<br><small class="muted">Zrušit lze do {{ r.user_cancel_until }}</small>{% endif %}
       </td>
       <td class="actions">
-        {% if r.can_confirm %}{{ action_button('main.confirm_reservation', r.id, 'Odeslat ke schválení' if r.requires_approval else 'Potvrdit') }}{% endif %}
+        {% if r.can_confirm %}{{ action_button('main.confirm_reservation', r.id, 'Potvrdit') }}{% endif %}
         {% if can_cancel %}{{ action_button('main.cancel_reservation', r.id, 'Stáhnout žádost' if r.state == 'PENDING_APPROVAL' else 'Zrušit', 'danger') }}{% endif %}
       </td>
     </tr>
