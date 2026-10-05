@@ -19,13 +19,18 @@ class FakeClock:
 
 @pytest.fixture
 def clock():
-    # "teď" = pondělí 14.09.2026 08:10
-    return FakeClock(datetime(2026, 9, 14, 8, 10))
+    # "teď" = úterý 15.09.2026 08:00; příklady ověření ze specifikace jsou na tentýž den
+    return FakeClock(datetime(2026, 9, 15, 8, 0))
 
 
 @pytest.fixture
-def conn(tmp_path):
-    c = connect(str(tmp_path / "test.db"))
+def db_path(tmp_path):
+    return str(tmp_path / "test.db")
+
+
+@pytest.fixture
+def conn(db_path):
+    c = connect(db_path)
     init_schema(c, seed_demo_users=False)
     yield c
     c.close()

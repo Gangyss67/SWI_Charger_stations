@@ -1,0 +1,43 @@
+@startuml
+skinparam defaultFontName Arial
+title OP-04 Cancel Reservation (v0.2)
+start
+:Požadavek na zrušení rezervace;
+#FFF3C4:if (Stav CONFIRMED nebo PENDING_APPROVAL?) then (ne)
+  :Chyba: zrušení není povoleno
+  (DRAFT propadne sám, ostatní
+  stavy jsou koncové);
+  stop
+else (ano)
+endif
+#FFF3C4:if (Stav rezervace?) then (PENDING_APPROVAL)
+  #FFF3C4:Nastavit stav CANCELLED
+  (stažení žádosti – vlastník
+  i admin, BR-03 v0.2);
+else (CONFIRMED)
+  if (Role žadatele?) then (Uživatel)
+    if (T_nyní ≤ T_start − 30 min? (BR-03)) then (ne)
+      :Chyba: Storno limit
+      30 min vypršel;
+      stop
+    else (ano)
+    endif
+    :Nastavit stav CANCELLED;
+  else (Administrátor)
+    if (T_nyní < T_end? (BR-03)) then (ne)
+      :Chyba: Rezervace
+      již skončila;
+      stop
+    else (ano)
+    endif
+    :Nastavit stav CANCELLED_BY_ADMIN;
+  endif
+endif
+:Uvolnit časový interval stanice pro nové rezervace;
+:Odeslat událost do Notification Service;
+:Potvrdit úspěšné zrušení žadateli;
+stop
+legend right
+  <back:#FFF3C4>   </back> změna v0.2
+endlegend
+@enduml

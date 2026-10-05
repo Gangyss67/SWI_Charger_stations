@@ -1,16 +1,29 @@
-"""Testy doménové logiky: stavy, operace, common rule, domain rule, notifikace."""
+"""Testy doménové logiky podle specifikace baseline v0.2 (cv2.docx).
+
+Každá operace OP-01..OP-05 má testy pojmenované podle příkladů ověření ze specifikace;
+"teď" je 15.09.2026 08:00 (viz conftest.clock).
+"""
 import sqlite3
-from datetime import date, datetime, timedelta
+import threading
+from datetime import date, datetime
 
 import pytest
 
+from charging.db import connect
 from charging.services import notifications
 from charging.services.reservations import (
     CANCELLED,
+    CANCELLED_BY_ADMIN,
     CONFIRMED,
     DRAFT,
-    PENDING,
+    EXPIRED,
+    PENDING_APPROVAL,
+    REJECTED,
+    UNAVAILABLE_COLLISION,
+    UNAVAILABLE_PENDING,
+    UNAVAILABLE_VEHICLE,
     ConflictError,
+    InvalidStateError,
     NotFoundError,
     PermissionDeniedError,
     ReservationError,
@@ -18,8 +31,12 @@ from charging.services.reservations import (
 )
 from conftest import make_user
 
-TOMORROW_10 = datetime(2026, 9, 15, 10, 0)
-AC_11KW, AC_11KW_B, DC_50KW, HPC = 1, 2, 7, 8
+AC01, AC02, DC07, HPC08, HPC09 = 1, 2, 7, 8, 9
+PLATE = "1AB 2345"
+
+
+def at(hour, minute=0, second=0):
+    return datetime(2026, 9, 15, hour, minute, second)
 
 
 @pytest.fixture
@@ -33,15 +50,34 @@ def users(conn):
     }
 
 
+def vehicle_of(who):
+    return "PHEV" if who == "phev" else "BEV"
+
+
+def draft(svc, users, who, station, start, slots):
+    return svc.create(users[who], station, start, slots, vehicle_of(who), PLATE)
+
+
+def confirmed(svc, users, who, station, start, slots):
+    """AC stanice: create + confirm -> CONFIRMED; DC/HPC: create + confirm + approve."""
+    rid = draft(svc, users, who, station, start, slots)
+    if svc.confirm(users[who], rid) == PENDING_APPROVAL:
+        svc.approve(users["admin"], rid)
+    return rid
+
+
+def pending(svc, users, who, station, start, slots):
+    rid = draft(svc, users, who, station, start, slots)
+    assert svc.confirm(users[who], rid) == PENDING_APPROVAL
+    return rid
+
+
 def state(conn, reservation_id):
     return conn.execute("SELECT state FROM reservations WHERE id = ?", (reservation_id,)).fetchone()["state"]
 
 
-def confirmed(svc, users, user, station, start, slots):
-    rid = svc.create(users[user], station, start, slots)
-    svc.submit(users[user], rid)
-    svc.approve(users["admin"], rid)
-    return rid
+def check(svc, station, start, slots, vehicle="BEV"):
+    return svc.search_availability(start, slots, vehicle, station_id=station)[0]
 
 
 def messages_for(conn, user_id):
@@ -51,343 +87,442 @@ def messages_for(conn, user_id):
 # ------------------------------------------------------------------ seed data
 
 
-def test_ten_stations_three_high_speed(conn):
-    rows = conn.execute("SELECT * FROM stations").fetchall()
-    assert len(rows) == 10
-    assert sum(r["is_high_speed"] for r in rows) == 3
+def test_ten_stations_three_hpc_and_four_require_approval(svc):
+    stations = svc.stations_overview()
+    assert len(stations) == 10
+    assert [s["name"] for s in stations if s["is_high_speed"]] == ["HPC 08", "HPC 09", "HPC 10"]
+    assert [s["name"] for s in stations if s["requires_approval"]] == ["DC 07", "HPC 08", "HPC 09", "HPC 10"]
 
 
-# ------------------------------------------------------------------ create
+# ------------------------------------------------------------------ OP-01 Check Availability
 
 
-def test_create_reservation_is_draft_with_30_minute_slots(svc, conn, users):
-    rid = svc.create(users["ev"], AC_11KW, TOMORROW_10, 3)
+def test_op01_examples_with_confirmed_on_hpc08(svc, users):
+    confirmed(svc, users, "ev", HPC08, at(10), 2)  # existující CONFIRMED [10:00, 11:00)
+    assert check(svc, HPC08, at(9), 2)["available"] is True  # [09:00, 10:00)
+    r = check(svc, HPC08, at(10, 30), 2)  # [10:30, 11:30)
+    assert r["available"] is False and r["reason"] == UNAVAILABLE_COLLISION
+    assert check(svc, HPC08, at(11), 2)["available"] is True  # [11:00, 12:00) hrana nekoliduje
+    r = check(svc, HPC08, at(11), 2, vehicle="PHEV")
+    assert r["available"] is False and r["reason"] == UNAVAILABLE_VEHICLE
+
+
+def test_op01_v02_pending_approval_blocks_station(svc, users):
+    pending(svc, users, "ev", HPC08, at(10), 2)
+    r = check(svc, HPC08, at(10, 30), 2)
+    assert r["available"] is False and r["reason"] == UNAVAILABLE_PENDING
+
+
+def test_op01_draft_does_not_block(svc, users):
+    draft(svc, users, "ev", AC01, at(10), 2)
+    assert check(svc, AC01, at(10), 2)["available"] is True
+
+
+def test_op01_search_returns_all_stations_with_approval_flag(svc, users):
+    result = svc.search_availability(at(10), 2, "PHEV")
+    assert len(result) == 10
+    by_name = {r["name"]: r for r in result}
+    assert all(by_name[n]["reason"] == UNAVAILABLE_VEHICLE for n in ("HPC 08", "HPC 09", "HPC 10"))
+    assert by_name["DC 07"]["available"] and by_name["DC 07"]["requires_approval"]
+    assert by_name["AC 01"]["available"] and not by_name["AC 01"]["requires_approval"]
+
+
+@pytest.mark.parametrize("start, slots", [(at(10, 15), 1), (at(7, 30), 1), (at(10), 0), (at(10), 9)])
+def test_op01_rejects_invalid_interval(svc, start, slots):
+    with pytest.raises(ReservationError):
+        svc.search_availability(start, slots, "BEV")
+
+
+def test_op01_requires_vehicle_type(svc):
+    with pytest.raises(ReservationError):
+        svc.search_availability(at(10), 1, None)
+
+
+# ------------------------------------------------------------------ OP-02 Create Reservation
+
+
+def test_op02_example_ac01_phev_creates_draft_with_5_minute_expiry(svc, conn, users):
+    rid = draft(svc, users, "phev", AC01, at(10), 1)
     row = conn.execute("SELECT * FROM reservations WHERE id = ?", (rid,)).fetchone()
-    assert row["state"] == DRAFT
-    assert row["start_time"] == "2026-09-15 10:00"
-    assert row["end_time"] == "2026-09-15 11:30"
+    assert (row["state"], row["start_time"], row["end_time"]) == (DRAFT, "2026-09-15 10:00", "2026-09-15 10:30")
+    assert (row["vehicle_type"], row["license_plate"]) == ("PHEV", PLATE)
+    assert row["draft_expires_at"] == "2026-09-15 08:05:00"
+    assert row["approval_deadline"] is None
 
 
-@pytest.mark.parametrize("start", [datetime(2026, 9, 15, 10, 15), datetime(2026, 9, 15, 10, 0, 30)])
-def test_create_rejects_start_not_aligned_to_slot(svc, users, start):
-    with pytest.raises(ReservationError):
-        svc.create(users["ev"], AC_11KW, start, 1)
-
-
-def test_create_rejects_past_and_already_started_slot(svc, users):
-    with pytest.raises(ReservationError):
-        svc.create(users["ev"], AC_11KW, datetime(2026, 9, 14, 8, 0), 1)  # teď je 08:10
-    assert svc.create(users["ev"], AC_11KW, datetime(2026, 9, 14, 8, 30), 1)
-
-
-@pytest.mark.parametrize("slots", [0, 9, -1, "2", None, True, 1.5])
-def test_create_rejects_invalid_slot_count(svc, users, slots):
-    with pytest.raises(ReservationError):
-        svc.create(users["ev"], AC_11KW, TOMORROW_10, slots)
-
-
-def test_create_rejects_beyond_booking_horizon(svc, users):
-    assert svc.create(users["ev"], AC_11KW, datetime(2026, 9, 28, 23, 30), 1)
-    with pytest.raises(ReservationError):
-        svc.create(users["ev"], AC_11KW, datetime(2026, 9, 29, 0, 0), 1)
-
-
-def test_create_unknown_station_or_user(svc, users):
-    with pytest.raises(NotFoundError):
-        svc.create(users["ev"], 999, TOMORROW_10, 1)
-    with pytest.raises(NotFoundError):
-        svc.create(999, AC_11KW, TOMORROW_10, 1)
-
-
-def test_reservation_may_cross_midnight(svc, conn, users):
-    rid = svc.create(users["ev"], AC_11KW, datetime(2026, 9, 15, 23, 30), 2)
-    row = conn.execute("SELECT end_time FROM reservations WHERE id = ?", (rid,)).fetchone()
-    assert row["end_time"] == "2026-09-16 00:30"
-
-
-# ------------------------------------------------------------------ domain rule
-
-
-def test_phev_cannot_reserve_high_speed_station(svc, users):
-    with pytest.raises(ReservationError, match="BEV"):
-        svc.create(users["phev"], HPC, TOMORROW_10, 1)
-
-
-def test_phev_can_reserve_normal_station_and_bev_can_reserve_high_speed(svc, users):
-    assert svc.create(users["phev"], DC_50KW, TOMORROW_10, 1)
-    assert svc.create(users["ev"], HPC, TOMORROW_10, 1)
-
-
-def test_db_trigger_blocks_phev_on_high_speed_even_without_service(conn, users):
-    with pytest.raises(sqlite3.IntegrityError, match="HIGH_SPEED_BEV_ONLY"):
-        conn.execute(
-            "INSERT INTO reservations (user_id, station_id, start_time, end_time, state, created_at, updated_at)"
-            " VALUES (?, ?, '2026-09-15 10:00', '2026-09-15 10:30', 'DRAFT', 'x', 'x')",
-            (users["phev"], HPC),
-        )
-
-
-# ------------------------------------------------------------------ state flow
-
-
-def test_full_flow_draft_pending_confirmed(svc, conn, users):
-    rid = svc.create(users["ev"], AC_11KW, TOMORROW_10, 2)
+def test_op02_example_hpc08_bev_creates_draft(svc, conn, users):
+    rid = draft(svc, users, "ev", HPC08, at(10), 2)
     assert state(conn, rid) == DRAFT
-    svc.submit(users["ev"], rid)
-    assert state(conn, rid) == PENDING
-    svc.approve(users["admin"], rid)
+
+
+def test_op02_example_hpc09_phev_is_rejected(svc, users):
+    with pytest.raises(ReservationError, match="BEV"):
+        draft(svc, users, "phev", HPC09, at(10), 1)
+
+
+def test_op02_example_ac02_not_aligned_is_rejected(svc, users):
+    with pytest.raises(ReservationError):
+        draft(svc, users, "ev", AC02, at(10, 15), 1)
+
+
+@pytest.mark.parametrize("plate", ["", "   ", None, "ÁBC 123", "1234567890123"])
+def test_op02_requires_valid_license_plate(svc, users, plate):
+    with pytest.raises(ReservationError):
+        svc.create(users["ev"], AC01, at(10), 1, "BEV", plate)
+
+
+def test_op02_normalizes_license_plate(svc, conn, users):
+    rid = svc.create(users["ev"], AC01, at(10), 1, "BEV", "  1ab   2345 ")
+    assert conn.execute("SELECT license_plate FROM reservations WHERE id = ?", (rid,)).fetchone()[0] == "1AB 2345"
+
+
+def test_op02_rejects_past_start_unknown_station_and_user(svc, users):
+    with pytest.raises(ReservationError):
+        draft(svc, users, "ev", AC01, at(8), 1)  # teď je 08:00 -> začátek není v budoucnu
+    with pytest.raises(NotFoundError):
+        draft(svc, users, "ev", 999, at(10), 1)
+    with pytest.raises(NotFoundError):
+        svc.create(999, AC01, at(10), 1, "BEV", PLATE)
+
+
+def test_op02_does_not_check_collisions(svc, conn, users):
+    confirmed(svc, users, "ev", AC01, at(10), 2)
+    rid = draft(svc, users, "ev2", AC01, at(10), 2)  # kolize se ověří až v OP-03
+    assert state(conn, rid) == DRAFT
+
+
+def test_db_blocks_phev_on_hpc_and_non_draft_insert(conn, users):
+    insert = (
+        "INSERT INTO reservations (user_id, station_id, vehicle_type, license_plate, start_time, end_time, state,"
+        " created_at, updated_at, draft_expires_at) VALUES (?, ?, ?, 'X', '2026-09-15 10:00', '2026-09-15 10:30',"
+        " ?, 'x', 'x', 'x')"
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="HIGH_SPEED_BEV_ONLY"):
+        conn.execute(insert, (users["phev"], HPC08, "PHEV", DRAFT))
+    with pytest.raises(sqlite3.IntegrityError, match="INVALID_INITIAL_STATE"):
+        conn.execute(insert, (users["ev"], AC01, "BEV", CONFIRMED))
+
+
+# ------------------------------------------------------------------ OP-03 Confirm Reservation
+
+
+def test_op03_ac_draft_without_collision_is_confirmed_immediately(svc, conn, users):
+    rid = draft(svc, users, "ev", AC01, at(10), 1)
+    assert svc.confirm(users["ev"], rid) == CONFIRMED
     assert state(conn, rid) == CONFIRMED
 
 
-def test_only_owner_can_submit(svc, users):
-    rid = svc.create(users["ev"], AC_11KW, TOMORROW_10, 1)
+@pytest.mark.parametrize("station", [DC07, HPC08])
+def test_op03_v02_dc_hpc_draft_goes_to_pending_approval(svc, conn, users, station):
+    rid = draft(svc, users, "ev", station, at(10), 2)
+    assert svc.confirm(users["ev"], rid) == PENDING_APPROVAL
+    row = conn.execute("SELECT * FROM reservations WHERE id = ?", (rid,)).fetchone()
+    assert row["state"] == PENDING_APPROVAL and row["approval_deadline"] == "2026-09-15 09:45:00"
+
+
+def test_op03_collision_with_confirmed_is_rejected_and_stays_draft(svc, conn, users):
+    confirmed(svc, users, "ev", AC01, at(10), 2)
+    rid = draft(svc, users, "ev2", AC01, at(10, 30), 2)
+    with pytest.raises(ConflictError):
+        svc.confirm(users["ev2"], rid)
+    assert state(conn, rid) == DRAFT
+
+
+def test_op03_v02_collision_with_pending_approval_is_rejected(svc, conn, users):
+    pending(svc, users, "ev", HPC08, at(10), 2)
+    rid = draft(svc, users, "ev2", HPC08, at(10, 30), 2)
+    with pytest.raises(ConflictError):
+        svc.confirm(users["ev2"], rid)
+    assert state(conn, rid) == DRAFT
+
+
+def test_op03_draft_older_than_5_minutes_is_expired(svc, conn, users, clock):
+    rid = draft(svc, users, "ev", AC01, at(10), 1)
+    clock.value = at(8, 5, 1)
+    with pytest.raises(InvalidStateError, match="vypršel"):
+        svc.confirm(users["ev"], rid)
+    assert state(conn, rid) == EXPIRED  # propadnutí se zapíše, i když potvrzení selhalo
+
+
+def test_op03_draft_exactly_5_minutes_old_can_be_confirmed(svc, users, clock):
+    rid = draft(svc, users, "ev", AC01, at(10), 1)
+    clock.value = at(8, 5)
+    assert svc.confirm(users["ev"], rid) == CONFIRMED
+
+
+def test_op03_v02_dc_confirm_less_than_15_minutes_before_start_is_rejected(svc, conn, users, clock):
+    clock.value = at(9, 44)
+    rid = draft(svc, users, "ev", DC07, at(10), 1)
+    clock.value = at(9, 46)  # T_start − 15 min = 09:45 už minulo
+    with pytest.raises(InvalidStateError, match="nezbývá čas"):
+        svc.confirm(users["ev"], rid)
+    assert state(conn, rid) == DRAFT
+
+
+def test_op03_v02_dc_confirm_exactly_at_approval_deadline_is_allowed(svc, users, clock):
+    clock.value = at(9, 44)
+    rid = draft(svc, users, "ev", DC07, at(10), 1)
+    clock.value = at(9, 45)
+    assert svc.confirm(users["ev"], rid) == PENDING_APPROVAL
+
+
+def test_op03_only_owner_and_only_from_draft(svc, users):
+    rid = draft(svc, users, "ev", AC01, at(10), 1)
     with pytest.raises(PermissionDeniedError):
-        svc.submit(users["ev2"], rid)
+        svc.confirm(users["ev2"], rid)
+    svc.confirm(users["ev"], rid)
+    with pytest.raises(InvalidStateError):
+        svc.confirm(users["ev"], rid)
 
 
-def test_submit_only_from_draft(svc, users):
-    rid = svc.create(users["ev"], AC_11KW, TOMORROW_10, 1)
-    svc.submit(users["ev"], rid)
-    with pytest.raises(ReservationError):
-        svc.submit(users["ev"], rid)
+@pytest.mark.parametrize("station, expected", [(AC01, CONFIRMED), (HPC08, PENDING_APPROVAL)])
+def test_op03_req04_concurrent_confirms_allow_exactly_one(conn, db_path, clock, station, expected):
+    """REQ-04 + future pressure Q: 10 souběžných potvrzení kolidujících DRAFT (každé ve vlastním
+    připojení a vlákně) -> do blokujícího stavu přejde právě jedno."""
+    setup = ReservationService(conn, None, clock)
+    users = [make_user(conn, f"race{i}", "BEV") for i in range(10)]
+    drafts = [setup.create(uid, station, at(10), 2, "BEV", PLATE) for uid in users]
+    barrier = threading.Barrier(len(users))
+    outcomes = []
+
+    def worker(user_id, reservation_id):
+        c = connect(db_path)
+        try:
+            svc = ReservationService(c, None, clock)
+            barrier.wait()
+            outcomes.append(svc.confirm(user_id, reservation_id))
+        except ConflictError:
+            outcomes.append("conflict")
+        finally:
+            c.close()
+
+    threads = [threading.Thread(target=worker, args=pair) for pair in zip(users, drafts)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert sorted(outcomes) == sorted([expected] + ["conflict"] * 9)
+    states = [row[0] for row in conn.execute("SELECT state FROM reservations ORDER BY id")]
+    assert states.count(expected) == 1 and states.count(DRAFT) == 9
 
 
-def test_cannot_submit_draft_whose_start_has_passed(svc, users, clock):
-    rid = svc.create(users["ev"], AC_11KW, datetime(2026, 9, 14, 9, 0), 1)
-    clock.value = datetime(2026, 9, 14, 9, 5)
-    with pytest.raises(ReservationError):
-        svc.submit(users["ev"], rid)
+def test_db_triggers_enforce_approval_policy_overlap_and_transitions(svc, conn, users):
+    ac = draft(svc, users, "ev", AC01, at(10), 1)
+    hpc = draft(svc, users, "ev", HPC08, at(10), 1)
+    with pytest.raises(sqlite3.IntegrityError, match="APPROVAL_REQUIRED"):
+        conn.execute("UPDATE reservations SET state = 'CONFIRMED' WHERE id = ?", (hpc,))
+    with pytest.raises(sqlite3.IntegrityError, match="APPROVAL_REQUIRED"):
+        conn.execute("UPDATE reservations SET state = 'PENDING_APPROVAL', approval_deadline = 'x' WHERE id = ?", (ac,))
 
+    svc.confirm(users["ev"], ac)
+    other = draft(svc, users, "ev2", AC01, at(10), 1)
+    with pytest.raises(sqlite3.IntegrityError, match="BLOCKING_OVERLAP"):
+        conn.execute("UPDATE reservations SET state = 'CONFIRMED' WHERE id = ?", (other,))
 
-def test_only_admin_can_approve(svc, conn, users):
-    rid = svc.create(users["ev"], AC_11KW, TOMORROW_10, 1)
-    svc.submit(users["ev"], rid)
-    with pytest.raises(PermissionDeniedError):
-        svc.approve(users["ev"], rid)
-    assert state(conn, rid) == PENDING
-
-
-def test_approve_requires_pending(svc, users):
-    rid = svc.create(users["ev"], AC_11KW, TOMORROW_10, 1)
-    with pytest.raises(ReservationError):
-        svc.approve(users["admin"], rid)
-
-
-def test_cannot_approve_finished_reservation(svc, users, clock):
-    rid = svc.create(users["ev"], AC_11KW, datetime(2026, 9, 14, 9, 0), 1)
-    svc.submit(users["ev"], rid)
-    clock.value = datetime(2026, 9, 14, 9, 30)
-    with pytest.raises(ReservationError):
-        svc.approve(users["admin"], rid)
-
-
-def test_db_trigger_blocks_invalid_state_transition(svc, conn, users):
-    rid = svc.create(users["ev"], AC_11KW, TOMORROW_10, 1)
-    svc.cancel(users["ev"], rid)
+    svc.cancel(users["ev"], ac)
     with pytest.raises(sqlite3.IntegrityError, match="INVALID_STATE_TRANSITION"):
-        conn.execute("UPDATE reservations SET state = 'CONFIRMED' WHERE id = ?", (rid,))
-    with pytest.raises(sqlite3.IntegrityError, match="INVALID_STATE_TRANSITION"):
-        rid2 = svc.create(users["ev"], AC_11KW, TOMORROW_10, 1)
-        conn.execute("UPDATE reservations SET state = 'CONFIRMED' WHERE id = ?", (rid2,))  # DRAFT -> CONFIRMED
+        conn.execute("UPDATE reservations SET state = 'CONFIRMED' WHERE id = ?", (ac,))
 
 
-# ------------------------------------------------------------------ cancel
+# ------------------------------------------------------------------ OP-04 Cancel Reservation
 
 
-@pytest.mark.parametrize("stage", [DRAFT, PENDING, CONFIRMED])
-def test_owner_can_cancel_from_any_active_state(svc, conn, users, stage):
-    rid = svc.create(users["ev"], AC_11KW, TOMORROW_10, 1)
-    if stage in (PENDING, CONFIRMED):
-        svc.submit(users["ev"], rid)
-    if stage == CONFIRMED:
-        svc.approve(users["admin"], rid)
-    svc.cancel(users["ev"], rid)
-    assert state(conn, rid) == CANCELLED
+@pytest.fixture
+def at_14(svc, users):
+    """CONFIRMED rezervace AC 01 s T_start ve 14:00 (příklady ověření OP-04)."""
+    return confirmed(svc, users, "ev", AC01, at(14), 2)
 
 
-def test_other_user_cannot_cancel_but_admin_can(svc, conn, users):
-    rid = svc.create(users["ev"], AC_11KW, TOMORROW_10, 1)
-    with pytest.raises(PermissionDeniedError):
-        svc.cancel(users["ev2"], rid)
-    svc.cancel(users["admin"], rid)
-    assert state(conn, rid) == CANCELLED
+def test_op04_user_cancels_at_13_15_is_cancelled_and_slot_free(svc, conn, users, clock, at_14):
+    clock.value = at(13, 15)
+    assert svc.cancel(users["ev"], at_14) == CANCELLED
+    assert state(conn, at_14) == CANCELLED
+    assert check(svc, AC01, at(14), 2)["available"] is True
+
+
+def test_op04_user_cancel_exactly_30_minutes_before_is_allowed(svc, users, clock, at_14):
+    clock.value = at(13, 30)
+    assert svc.cancel(users["ev"], at_14) == CANCELLED
+
+
+def test_op04_user_cancels_at_13_40_is_rejected(svc, conn, users, clock, at_14):
+    clock.value = at(13, 40)
+    with pytest.raises(InvalidStateError, match="Storno limit"):
+        svc.cancel(users["ev"], at_14)
+    assert state(conn, at_14) == CONFIRMED
+
+
+def test_op04_admin_cancels_at_13_50_is_cancelled_by_admin(svc, conn, users, clock, at_14):
+    clock.value = at(13, 50)
+    assert svc.cancel(users["admin"], at_14) == CANCELLED_BY_ADMIN
+    assert check(svc, AC01, at(14), 2)["available"] is True
     assert any("zrušena administrátorem" in m for m in messages_for(conn, users["ev"]))
 
 
-def test_cannot_cancel_twice(svc, users):
-    rid = svc.create(users["ev"], AC_11KW, TOMORROW_10, 1)
-    svc.cancel(users["ev"], rid)
-    with pytest.raises(ReservationError):
-        svc.cancel(users["ev"], rid)
+def test_op04_admin_can_cancel_running_but_not_finished_reservation(svc, users, clock, at_14):
+    finished = confirmed(svc, users, "ev2", AC02, at(14), 1)  # [14:00, 14:30)
+    clock.value = at(14, 30)
+    assert svc.cancel(users["admin"], at_14) == CANCELLED_BY_ADMIN  # [14:00, 15:00) právě probíhá
+    with pytest.raises(InvalidStateError, match="skončila"):
+        svc.cancel(users["admin"], finished)
 
 
-def test_cannot_cancel_finished_confirmed_reservation(svc, users, clock):
-    rid = confirmed(svc, users, "ev", AC_11KW, datetime(2026, 9, 14, 9, 0), 1)
-    clock.value = datetime(2026, 9, 14, 10, 0)
-    with pytest.raises(ReservationError):
-        svc.cancel(users["ev"], rid)
+def test_op04_v02_user_withdraws_pending_request_without_30_minute_limit(svc, conn, users, clock):
+    rid = pending(svc, users, "ev", HPC08, at(10), 2)
+    clock.value = at(9, 40)  # 20 min před začátkem, lhůta schválení (09:45) ještě běží
+    assert svc.cancel(users["ev"], rid) == CANCELLED
+    assert check(svc, HPC08, at(10), 2)["available"] is True
 
 
-# ------------------------------------------------------------------ common rule: no overlap
+def test_op04_v02_admin_cancels_pending_request(svc, conn, users):
+    rid = pending(svc, users, "ev", HPC08, at(10), 2)
+    assert svc.cancel(users["admin"], rid) == CANCELLED
+    assert any("zrušena administrátorem" in m for m in messages_for(conn, users["ev"]))
 
 
-def test_cannot_create_over_confirmed_reservation(svc, users):
-    confirmed(svc, users, "ev", AC_11KW, TOMORROW_10, 2)  # 10:00–11:00
-    with pytest.raises(ConflictError):
-        svc.create(users["ev2"], AC_11KW, datetime(2026, 9, 15, 10, 30), 2)
-    with pytest.raises(ConflictError):
-        svc.create(users["ev2"], AC_11KW, datetime(2026, 9, 15, 9, 30), 4)  # obaluje celou rezervaci
+def test_op04_rejects_draft_terminal_states_and_foreign_user(svc, users, clock):
+    d = draft(svc, users, "ev", AC01, at(10), 1)
+    with pytest.raises(InvalidStateError, match="DRAFT"):
+        svc.cancel(users["ev"], d)
+    c = confirmed(svc, users, "ev", AC02, at(10), 1)
+    with pytest.raises(PermissionDeniedError):
+        svc.cancel(users["ev2"], c)
+    svc.cancel(users["ev"], c)
+    with pytest.raises(InvalidStateError):
+        svc.cancel(users["ev"], c)  # už zrušená
+    r = pending(svc, users, "ev", HPC08, at(10), 1)
+    svc.reject(users["admin"], r)
+    with pytest.raises(InvalidStateError):
+        svc.cancel(users["ev"], r)
 
 
-def test_two_pending_may_overlap_but_only_one_can_be_confirmed(svc, conn, users):
-    a = svc.create(users["ev"], AC_11KW, TOMORROW_10, 2)
-    b = svc.create(users["ev2"], AC_11KW, datetime(2026, 9, 15, 10, 30), 2)
-    svc.submit(users["ev"], a)
-    svc.submit(users["ev2"], b)
-    svc.approve(users["admin"], a)
-    with pytest.raises(ConflictError):
-        svc.approve(users["admin"], b)
-    assert state(conn, a) == CONFIRMED
-    assert state(conn, b) == PENDING
-    assert svc.get_reservation(b)["has_conflict"] is True
-    assert svc.get_reservation(b)["can_approve"] is False
+# ------------------------------------------------------------------ OP-05 Approve / Reject
 
 
-def test_adjacent_reservations_do_not_overlap(svc, conn, users):
-    a = confirmed(svc, users, "ev", AC_11KW, TOMORROW_10, 2)  # 10:00–11:00
-    b = confirmed(svc, users, "ev2", AC_11KW, datetime(2026, 9, 15, 11, 0), 2)  # 11:00–12:00
-    assert state(conn, a) == state(conn, b) == CONFIRMED
+def test_op05_admin_approves_in_time_and_requester_is_notified(svc, conn, users, clock):
+    rid = pending(svc, users, "ev", HPC08, at(10), 2)
+    clock.value = at(9)
+    assert svc.approve(users["admin"], rid) == CONFIRMED
+    assert state(conn, rid) == CONFIRMED
+    assert check(svc, HPC08, at(10), 2)["reason"] == UNAVAILABLE_COLLISION
+    assert any("byla schválena" in m for m in messages_for(conn, users["ev"]))
 
 
-def test_same_time_on_different_station_is_allowed(svc, conn, users):
-    confirmed(svc, users, "ev", AC_11KW, TOMORROW_10, 2)
-    b = confirmed(svc, users, "ev2", AC_11KW_B, TOMORROW_10, 2)
-    assert state(conn, b) == CONFIRMED
+def test_op05_approve_exactly_at_deadline_is_allowed(svc, users, clock):
+    rid = pending(svc, users, "ev", HPC08, at(10), 2)
+    clock.value = at(9, 45)
+    assert svc.approve(users["admin"], rid) == CONFIRMED
 
 
-def test_cancelled_reservation_frees_the_slot(svc, conn, users):
-    a = confirmed(svc, users, "ev", AC_11KW, TOMORROW_10, 2)
-    svc.cancel(users["ev"], a)
-    b = confirmed(svc, users, "ev2", AC_11KW, TOMORROW_10, 2)
-    assert state(conn, b) == CONFIRMED
+def test_op05_approve_after_deadline_is_rejected_request_expired_and_slot_free(svc, conn, users, clock):
+    rid = pending(svc, users, "ev", HPC08, at(10), 2)
+    clock.value = at(9, 50)
+    with pytest.raises(InvalidStateError, match="propadla"):
+        svc.approve(users["admin"], rid)
+    assert state(conn, rid) == EXPIRED
+    assert check(svc, HPC08, at(10), 2)["available"] is True
 
 
-def test_db_trigger_blocks_overlapping_confirmed_even_without_service(svc, conn, users):
-    confirmed(svc, users, "ev", AC_11KW, TOMORROW_10, 2)
-    with pytest.raises(sqlite3.IntegrityError, match="CONFIRMED_OVERLAP"):
-        conn.execute(
-            "INSERT INTO reservations (user_id, station_id, start_time, end_time, state, created_at, updated_at)"
-            " VALUES (?, ?, '2026-09-15 10:30', '2026-09-15 11:30', 'CONFIRMED', 'x', 'x')",
-            (users["ev2"], AC_11KW),
-        )
+def test_op05_reject_releases_slot_and_notifies_requester(svc, conn, users):
+    rid = pending(svc, users, "ev", HPC08, at(10), 2)
+    assert svc.reject(users["admin"], rid) == REJECTED
+    assert state(conn, rid) == REJECTED
+    assert check(svc, HPC08, at(10), 2)["available"] is True
+    assert any("zamítnuta" in m for m in messages_for(conn, users["ev"]))
 
 
-def test_overlap_rule_holds_across_separate_connections(svc, conn, users, clock, tmp_path):
-    """Dvě nezávislá připojení (jako dva souběžné requesty) schvalují kolidující rezervace."""
-    from charging.db import connect
-
-    a = svc.create(users["ev"], AC_11KW, TOMORROW_10, 2)
-    b = svc.create(users["ev2"], AC_11KW, TOMORROW_10, 2)
-    svc.submit(users["ev"], a)
-    svc.submit(users["ev2"], b)
-    other = connect(str(tmp_path / "test.db"))
-    try:
-        svc_other = ReservationService(other, None, clock)
-        svc.approve(users["admin"], a)
-        with pytest.raises(ConflictError):
-            svc_other.approve(users["admin"], b)
-    finally:
-        other.close()
-    count = conn.execute("SELECT COUNT(*) FROM reservations WHERE state = 'CONFIRMED'").fetchone()[0]
-    assert count == 1
+def test_op05_non_admin_cannot_approve_or_reject(svc, conn, users):
+    rid = pending(svc, users, "ev", HPC08, at(10), 2)
+    with pytest.raises(PermissionDeniedError):
+        svc.approve(users["ev"], rid)
+    with pytest.raises(PermissionDeniedError):
+        svc.reject(users["ev2"], rid)
+    assert state(conn, rid) == PENDING_APPROVAL
 
 
-# ------------------------------------------------------------------ check availability
+def test_op05_only_pending_approval_can_be_decided(svc, users):
+    d = draft(svc, users, "ev", HPC08, at(10), 1)
+    with pytest.raises(InvalidStateError):
+        svc.approve(users["admin"], d)
+    c = confirmed(svc, users, "ev", AC01, at(10), 1)
+    with pytest.raises(InvalidStateError):
+        svc.reject(users["admin"], c)
 
 
-def test_check_availability(svc, users):
-    ok, _ = svc.check_availability(AC_11KW, TOMORROW_10, 2, users["ev"])
-    assert ok
-    confirmed(svc, users, "ev", AC_11KW, TOMORROW_10, 2)
-    ok, message = svc.check_availability(AC_11KW, datetime(2026, 9, 15, 10, 30), 1, users["ev2"])
-    assert not ok and "obsazený" in message
-    ok, message = svc.check_availability(HPC, TOMORROW_10, 1, users["phev"])
-    assert not ok and "BEV" in message
+# ------------------------------------------------------------------ BR-05 / BR-06 časové přechody
+
+
+def test_br05_unconfirmed_draft_expires_without_any_operation(svc, users, clock):
+    rid = draft(svc, users, "ev", AC01, at(10), 1)
+    clock.value = at(8, 6)
+    [res] = svc.list_for_user(users["ev"])
+    assert res["id"] == rid and res["state"] == EXPIRED
+
+
+def test_br06_undecided_request_expires_and_releases_slot(svc, users, clock):
+    rid = pending(svc, users, "ev", HPC08, at(10), 2)
+    clock.value = at(9, 45)
+    assert check(svc, HPC08, at(10), 2)["available"] is False
+    clock.value = at(9, 45, 1)
+    assert check(svc, HPC08, at(10), 2)["available"] is True
+    assert svc.get_reservation(rid)["state"] == EXPIRED
+
+
+# ------------------------------------------------------------------ přehledy dostupnosti
 
 
 def test_availability_grid_states(svc, users, clock):
-    confirmed(svc, users, "ev", AC_11KW, TOMORROW_10, 2)  # sloty 20 a 21
-    pending = svc.create(users["ev2"], AC_11KW, datetime(2026, 9, 15, 11, 0), 1)
-    svc.submit(users["ev2"], pending)
-
-    slots = svc.availability(AC_11KW, date(2026, 9, 15), viewer_id=users["ev"])
+    confirmed(svc, users, "ev", HPC08, at(10), 2)  # sloty 20, 21
+    pending(svc, users, "ev2", HPC08, at(11), 1)  # slot 22
+    slots = svc.availability(HPC08, date(2026, 9, 15), viewer_id=users["ev"])
     assert len(slots) == 48
-    assert [s["state"] for s in slots[19:23]] == ["FREE", "RESERVED", "RESERVED", "FREE"]
-    assert slots[20]["mine"] and not slots[19]["mine"]
-    assert slots[22]["pending_count"] == 1
+    assert [s["state"] for s in slots[19:24]] == ["FREE", "RESERVED", "RESERVED", "PENDING", "FREE"]
+    assert slots[20]["mine"] and not slots[22]["mine"]
+    assert slots[15]["state"] == "PAST"
 
-    clock.value = datetime(2026, 9, 15, 10, 15)
-    slots = svc.availability(AC_11KW, date(2026, 9, 15))
-    assert [s["state"] for s in slots[19:23]] == ["PAST", "IN_USE", "RESERVED", "FREE"]
+    clock.value = at(10, 15)
+    slots = svc.availability(HPC08, date(2026, 9, 15))
+    assert [s["state"] for s in slots[20:22]] == ["IN_USE", "RESERVED"]
 
 
 def test_stations_overview_statuses(svc, users, clock):
-    confirmed(svc, users, "ev", AC_11KW, datetime(2026, 9, 14, 9, 0), 2)
-    confirmed(svc, users, "ev2", AC_11KW_B, datetime(2026, 9, 14, 15, 0), 1)
-    clock.value = datetime(2026, 9, 14, 9, 30)
+    confirmed(svc, users, "ev", AC01, at(9), 2)
+    confirmed(svc, users, "ev2", AC02, at(15), 1)
+    pending(svc, users, "ev3", HPC08, at(16), 1)
+    clock.value = at(9, 30)
     overview = {s["id"]: s for s in svc.stations_overview()}
-    assert overview[AC_11KW]["status"] == "IN_USE"
-    assert overview[AC_11KW_B]["status"] == "RESERVED"
+    assert overview[AC01]["status"] == "IN_USE"
+    assert overview[AC02]["status"] == "RESERVED"
+    assert overview[HPC08]["status"] == "PENDING"
     assert overview[3]["status"] == "FREE"
 
 
-# ------------------------------------------------------------------ notification boundary
+# ------------------------------------------------------------------ Notification Service (boundary)
 
 
-def test_approve_and_submit_send_notifications(svc, conn, users):
-    rid = svc.create(users["ev"], AC_11KW, TOMORROW_10, 1)
-    svc.submit(users["ev"], rid)
-    assert any("čeká na schválení" in m.lower() for m in messages_for(conn, users["admin"]))
-    svc.approve(users["admin"], rid)
-    assert any("potvrzena" in m for m in messages_for(conn, users["ev"]))
-
-
-def test_released_high_speed_slot_notifies_pending_and_eligible_lower_power_users(svc, conn, users):
-    # ev: potvrzená HPC 10:00–11:00; ev2: čekající HPC 10:30–11:30 (koliduje)
-    a = svc.create(users["ev"], HPC, TOMORROW_10, 2)
-    b = svc.create(users["ev2"], HPC, datetime(2026, 9, 15, 10, 30), 2)
-    svc.submit(users["ev"], a)
-    svc.submit(users["ev2"], b)
-    svc.approve(users["admin"], a)
-    # ev3 (BEV) na AC 11 kW, phev na AC 11 kW ve stejném čase
-    confirmed(svc, users, "ev3", AC_11KW, TOMORROW_10, 1)
-    confirmed(svc, users, "phev", AC_11KW_B, TOMORROW_10, 2)
+def test_released_hpc_slot_notifies_draft_owner_and_eligible_lower_power_users(svc, conn, users):
+    a = confirmed(svc, users, "ev", HPC08, at(10), 2)
+    waiting = draft(svc, users, "ev2", HPC08, at(10, 30), 2)  # potvrzení teď kolize odmítne
+    confirmed(svc, users, "ev3", AC01, at(10), 1)
+    confirmed(svc, users, "phev", AC02, at(10), 2)
     before = {u: len(messages_for(conn, uid)) for u, uid in users.items()}
 
-    svc.cancel(users["ev"], a)
+    svc.cancel(users["admin"], a)
 
     new = {u: messages_for(conn, uid)[: len(messages_for(conn, uid)) - before[u]] for u, uid in users.items()}
-    assert len(new["ev2"]) == 1 and "může být potvrzena" in new["ev2"][0]
+    assert len(new["ev2"]) == 1 and f"návrh #{waiting} teď můžete potvrdit" in new["ev2"][0]
     assert len(new["ev3"]) == 1 and "výkonnější nabíječka HPC 08" in new["ev3"][0]
     assert new["phev"] == []  # PHEV nesmí na HPC -> neupozorňujeme
-    assert new["ev"] == []
-    svc.approve(users["admin"], b)
-    assert state(conn, b) == CONFIRMED
+    assert len(new["ev"]) == 1 and "zrušena administrátorem" in new["ev"][0]
+    assert svc.confirm(users["ev2"], waiting) == PENDING_APPROVAL
 
 
-def test_released_normal_station_notifies_phev_on_weaker_station(svc, conn, users):
-    a = confirmed(svc, users, "ev", DC_50KW, TOMORROW_10, 2)
-    confirmed(svc, users, "phev", AC_11KW, TOMORROW_10, 1)
+def test_released_dc_slot_notifies_phev_on_weaker_station(svc, conn, users):
+    a = confirmed(svc, users, "ev", DC07, at(10), 2)
+    confirmed(svc, users, "phev", AC01, at(10), 1)
     svc.cancel(users["ev"], a)
     assert any("DC 07 (50 kW)" in m for m in messages_for(conn, users["phev"]))
-
-
-def test_no_release_notification_when_cancelling_pending(svc, conn, users):
-    confirmed(svc, users, "ev3", AC_11KW, TOMORROW_10, 1)
-    b = svc.create(users["ev"], HPC, TOMORROW_10, 1)
-    svc.submit(users["ev"], b)
-    svc.cancel(users["ev"], b)
-    assert not any("výkonnější" in m for m in messages_for(conn, users["ev3"]))
 
 
 def test_notification_failure_does_not_break_reservation(conn, users, clock):
@@ -399,8 +534,7 @@ def test_notification_failure_does_not_break_reservation(conn, users, clock):
             return fail
 
     svc = ReservationService(conn, BrokenNotifier(), clock)
-    rid = svc.create(users["ev"], AC_11KW, TOMORROW_10, 1)
-    svc.submit(users["ev"], rid)
+    rid = pending(svc, users, "ev", HPC08, at(10), 1)
     svc.approve(users["admin"], rid)
     svc.cancel(users["ev"], rid)
     assert state(conn, rid) == CANCELLED

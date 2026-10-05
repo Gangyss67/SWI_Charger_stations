@@ -21,6 +21,10 @@ def format_ts(value: datetime) -> str:
     return value.strftime(TS_FMT)
 
 
+def parse_ts(value: str) -> datetime:
+    return datetime.strptime(value, TS_FMT)
+
+
 def floor_to_slot(value: datetime) -> datetime:
     return value.replace(minute=value.minute - value.minute % SLOT_MINUTES, second=0, microsecond=0)
 

@@ -32,11 +32,12 @@ def main() -> int:
     admin_id = conn.execute("SELECT id FROM users WHERE username = 'admin'").fetchone()["id"]
     svc = ReservationService(conn)
     start = floor_to_slot(datetime.now()) + timedelta(days=1)
-    reservation_id = svc.create(user_id, 8, start, 2)
-    svc.submit(user_id, reservation_id)
+    # baseline v0.2: HPC 08 vyžaduje schválení -> DRAFT -> PENDING_APPROVAL -> CONFIRMED
+    reservation_id = svc.create(user_id, 8, start, 2, "BEV", "1AB 2345")
+    svc.confirm(user_id, reservation_id)
     svc.approve(admin_id, reservation_id)
     conn.close()
-    print(f"[write] reservation id={reservation_id} created+submitted+approved, connection closed")
+    print(f"[write] reservation id={reservation_id} created+confirmed+approved, connection closed")
 
     # 2) načtení přes úplně nové spojení
     conn = connect(str(db_path))
@@ -51,16 +52,20 @@ def main() -> int:
         == timedelta(minutes=60),
     }
 
-    # 3) pravidlo v DB drží i po znovuotevření (překrývající CONFIRMED insert musí selhat)
+    # 3) pravidlo v DB drží i po znovuotevření: překrývající DRAFT vložený mimo službu
+    #    nesmí přejít do blokujícího stavu (BR-02 v0.2)
+    cur = conn.execute(
+        "INSERT INTO reservations (user_id, station_id, vehicle_type, license_plate, start_time, end_time, state,"
+        " created_at, updated_at, draft_expires_at) VALUES (?, 8, 'BEV', 'X', ?, ?, 'DRAFT', 'x', 'x', 'x')",
+        (user_id, row["start_time"], row["end_time"]),
+    )
     try:
         conn.execute(
-            "INSERT INTO reservations (user_id, station_id, start_time, end_time, state, created_at, updated_at)"
-            " VALUES (?, 8, ?, ?, 'CONFIRMED', 'x', 'x')",
-            (user_id, row["start_time"], row["end_time"]),
+            "UPDATE reservations SET state = 'PENDING_APPROVAL', approval_deadline = 'x' WHERE id = ?", (cur.lastrowid,)
         )
         checks["overlap blocked by DB trigger"] = False
     except sqlite3.IntegrityError as exc:
-        checks["overlap blocked by DB trigger"] = "CONFIRMED_OVERLAP" in str(exc)
+        checks["overlap blocked by DB trigger"] = "BLOCKING_OVERLAP" in str(exc)
     conn.close()
 
     for name, ok in checks.items():

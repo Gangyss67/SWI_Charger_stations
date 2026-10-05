@@ -1,0 +1,30 @@
+@startuml
+!pragma layout smetana
+skinparam defaultFontName Arial
+skinparam state {
+  BackgroundColor<<new>> #FFF3C4
+}
+hide empty description
+state DRAFT : Platnost max. 5 minut\nNeblokuje stanici
+state PENDING_APPROVAL <<new>> : Podmíněně blokuje stanici\nRozhodnout do T_start − 15 min
+state CONFIRMED : Exkluzivně blokuje stanici
+state REJECTED <<new>>
+[*] --> DRAFT : OP-02 Create\n[validní interval\na kompatibilita vozu]
+DRAFT --> CONFIRMED : OP-03 Confirm\n[AC stanice, bez kolize]
+DRAFT --> PENDING_APPROVAL : OP-03 Confirm\n[DC/HPC, bez kolize,\nT_nyní ≤ T_start − 15 min]
+DRAFT --> EXPIRED : [T_nyní > vytvoření + 5 min]\n(BR-05)
+PENDING_APPROVAL --> CONFIRMED : OP-05 Approve\n[Admin, T_nyní ≤ T_start − 15 min]
+PENDING_APPROVAL --> REJECTED : OP-05 Reject\n[Admin]
+PENDING_APPROVAL --> CANCELLED : OP-04 Cancel\n[vlastník / Admin]
+PENDING_APPROVAL --> EXPIRED : [T_nyní > T_start − 15 min]\n(BR-06)
+CONFIRMED --> CANCELLED : OP-04 Cancel by User\n[T_nyní ≤ T_start − 30 min]
+CONFIRMED --> CANCELLED_BY_ADMIN : OP-04 Cancel by Admin\n[T_nyní < T_end]
+CONFIRMED --> [*] : [T_end uplynul]
+CANCELLED --> [*]
+CANCELLED_BY_ADMIN --> [*]
+REJECTED --> [*]
+EXPIRED --> [*]
+legend right
+  <back:#FFF3C4>   </back> nový stav v0.2
+endlegend
+@enduml

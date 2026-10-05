@@ -1,38 +1,44 @@
+# Project Frame
+
 ## Reservation domain
-Charging stations on a parking lot
+Charging stations on a parking lot, reserved in 30-minute time slots.
 
 ## Purpose
-The system is used to reserve parking spaces with acces to charging stations with different charging speeds. The goal is to prevent situations where the parking lot is overcrowded or being used inefficiently.
+The system is used to reserve charging stations with different charging speeds on a parking lot. The goal is to prevent situations where the parking lot is overcrowded or the chargers are being used inefficiently.
 
 ## Users / Stakeholders
-User – has the ability to create and cancel a reservation
-Admin – has the ability to view all reservations and modify or cancel a reservation
+- User – driver of an EV or a plug-in hybrid; can check availability, create, confirm and cancel their own reservations
+- Admin – can view all reservations, approve / reject requests for fast stations (DC, HPC) and cancel reservations
 
 ## Core concepts
-Reservation, Charging station, User, EV sorting (EV, plug-in hybrid)
+- Reservation – a user's claim on one charging station for a time interval made of 30-minute slots
+- Charging station (Resource) – one of 10 chargers with a given power in kW; 3 of them are high-speed (HPC), stations ≥ 50 kW (DC, HPC) require admin approval
+- User – a person with an account and a vehicle type
+- Vehicle type – EV (BEV) or plug-in hybrid (PHEV); decides which stations the user may reserve
 
 ## Core operations
-- Create reservation
-- Confirm / approve reservation
-- Cancel reservation
-- View reservation
-- View parking space
+- Check availability (OP-01)
+- Create reservation (OP-02)
+- Confirm reservation (OP-03)
+- Cancel reservation (OP-04)
+- Approve / reject reservation (OP-05, admin – since baseline v0.2)
 
 ## Persistent state
-Specific parking slot, charging speed, time slot, user information (EV type, license plate)
+- Reservation: user, charging station, vehicle type, license plate, start time, end time (30-minute slots), state, created/updated timestamps, draft expiry, approval deadline
+- Charging station: name, charging power (kW), whether it is high-speed
+- User: username, password hash, vehicle type (EV / plug-in hybrid), admin role
 
 ## State-changing operation
-DRAFT → CONFIRMED
-CONFIRMED → CANCELLED
-CONFIRMED → CANCELLED BY ADMIN
-CONFIRMED → PENDING
-PENDING → CANCELLED PREMATURELY
+- DRAFT → CONFIRMED (user confirms, AC station) or DRAFT → PENDING_APPROVAL (user confirms, DC/HPC station)
+- PENDING_APPROVAL → CONFIRMED / REJECTED (admin approves / rejects)
+- CONFIRMED → CANCELLED (user, at least 30 min before start) / CANCELLED_BY_ADMIN (admin, before end); PENDING_APPROVAL → CANCELLED
+- DRAFT → EXPIRED after 5 min; PENDING_APPROVAL → EXPIRED when not decided by start − 15 min
 
 ## Common business rule
-Confirmed reservations for the same charging station must not overlap.
+Reservations in a blocking state (CONFIRMED, PENDING_APPROVAL) for the same charging station must not overlap.
 
 ## Domain-specific business rule
-Only an EV can par at a high-speed charging station, plug-in hybrids have to use slower chargers.
+Only an EV can park at a high-speed charging station, plug-in hybrids have to use slower chargers.
 
 ## External / system boundary
 Notification Service – a parking space has opened up, a parking space with a higher charging speed has opened up

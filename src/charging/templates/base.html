@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}Nabíjecí stanice{% endblock %} · Rezervace</title>
+  <title>{% block title %}Nabíjecí stanice{% endblock %} · ChargeBook</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
@@ -14,7 +14,7 @@
       <a href="{{ url_for('main.index') }}">Stanice</a>
       {% if g.user %}
         <a href="{{ url_for('main.my_reservations') }}">Moje rezervace</a>
-        {% if g.user.is_admin %}<a href="{{ url_for('main.admin_reservations') }}">Schvalování</a>{% endif %}
+        {% if g.user.is_admin %}<a href="{{ url_for('main.admin_reservations') }}">Schvalování{% if pending_approvals %} <span class="badge-count">{{ pending_approvals }}</span>{% endif %}</a>{% endif %}
         <a href="{{ url_for('main.notifications_page') }}">Notifikace{% if unread_notifications %} <span class="badge-count">{{ unread_notifications }}</span>{% endif %}</a>
         <span class="who">{{ g.user.username }} · {{ g.user.vehicle_type }}{% if g.user.is_admin %} · admin{% endif %}</span>
         <form method="post" action="{{ url_for('auth.logout') }}" class="inline">

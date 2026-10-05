@@ -1,0 +1,39 @@
+@startuml
+skinparam defaultFontName Arial
+title OP-05 Approve / Reject Reservation (nová operace v0.2)
+start
+:Administrátor otevře frontu žádostí PENDING_APPROVAL
+(seřazenou podle termínu rozhodnutí);
+:Vybere žádost a zvolí Schválit / Zamítnout;
+if (Má aktér roli Admin?) then (ne)
+  :Odmítnout (403), stav se nemění;
+  stop
+else (ano)
+endif
+if (T_nyní > T_start − 15 min? (BR-06)) then (ano)
+  :Nastavit stav EXPIRED, slot se uvolní;
+  :Odmítnout – žádost propadla;
+  stop
+else (ne)
+endif
+:Zahájit atomickou transakci;
+if (Rezervace je ve stavu PENDING_APPROVAL?) then (ne)
+  :Rollback – odmítnout
+  (už rozhodnutá nebo stažená žádost);
+  stop
+else (ano)
+endif
+if (Rozhodnutí?) then (Schválit)
+  :Změnit stav na CONFIRMED
+  (stanice zůstává blokována, BR-02);
+  :Commit transakce;
+  :Notification Service: žádost schválena;
+else (Zamítnout)
+  :Změnit stav na REJECTED;
+  :Commit transakce;
+  :Uvolnit časový interval stanice;
+  :Notification Service: žádost zamítnuta,
+  uvolněný slot;
+endif
+stop
+@enduml

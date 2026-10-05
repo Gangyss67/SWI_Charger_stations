@@ -9,8 +9,8 @@
     <label>Heslo (min. 8 znaků) <input type="password" name="password" required minlength="8" autocomplete="new-password"></label>
     <label>Heslo znovu <input type="password" name="password_again" required minlength="8" autocomplete="new-password"></label>
     <fieldset>
-      <legend>Typ vozidla</legend>
-      <label class="radio"><input type="radio" name="vehicle_type" value="BEV"{% if form.vehicle_type == 'BEV' %} checked{% endif %}> Plně elektrický (BEV) – může i na vysokorychlostní nabíječky</label>
+      <legend>Výchozí typ vozidla <small class="muted">(předvyplní se do rezervace, lze změnit)</small></legend>
+      <label class="radio"><input type="radio" name="vehicle_type" value="BEV"{% if form.vehicle_type == 'BEV' %} checked{% endif %}> Plně elektrický (BEV) – může i na HPC nabíječky</label>
       <label class="radio"><input type="radio" name="vehicle_type" value="PHEV"{% if form.vehicle_type == 'PHEV' %} checked{% endif %}> Plug-in hybrid (PHEV)</label>
     </fieldset>
     <button class="btn">Vytvořit účet</button>

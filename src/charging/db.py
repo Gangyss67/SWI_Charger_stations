@@ -10,8 +10,10 @@ from flask import current_app, g
 from werkzeug.security import generate_password_hash
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
+SCHEMA_VERSION = 2  # PRAGMA user_version nastavuje schema.sql; 0/1 = C01 (stavy DRAFT/PENDING/...)
 
-# 10 nabíječek, z toho 3 vysokorychlostní (jen pro BEV).
+# 10 nabíječek, z toho 3 vysokorychlostní (jen pro BEV). DC 07 a HPC 08–10 (>= 50 kW)
+# vyžadují schválení administrátorem (BR-06).
 STATIONS = [
     (1, "AC 01", 11, 0),
     (2, "AC 02", 11, 0),
@@ -86,8 +88,30 @@ def close_db(_exc=None) -> None:
         conn.close()
 
 
+def retire_outdated_database(path: str) -> Path | None:
+    """Starší schéma nejde rozšířit přes CREATE TABLE IF NOT EXISTS (jiné stavy a sloupce).
+    Soubor se proto nepřepisuje, ale přejmenuje na zálohu a založí se nová databáze."""
+    db_path = Path(path)
+    if not db_path.exists():
+        return None
+    conn = connect(path)
+    try:
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        has_tables = conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'reservations'").fetchone()
+    finally:
+        conn.close()
+    if has_tables is None or version >= SCHEMA_VERSION:
+        return None
+    backup = db_path.with_name(f"{db_path.name}.v{version}.bak")
+    db_path.replace(backup)
+    return backup
+
+
 def init_app(app) -> None:
     app.teardown_appcontext(close_db)
+    backup = retire_outdated_database(app.config["DATABASE"])
+    if backup is not None:
+        app.logger.warning("Databáze se starším schématem byla přesunuta do %s", backup)
     conn = connect(app.config["DATABASE"])
     try:
         init_schema(conn, seed_demo_users=app.config["SEED_DEMO_USERS"])
