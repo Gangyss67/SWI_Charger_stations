@@ -71,138 +71,103 @@ Stav slotu/stanice se nepersistuje, ale počítá z rezervací: **volná**, **č
 - **Rozhodnutí:** podle OP-02 zadává uživatel typ vozu a SPZ u každé rezervace; typ vozu z profilu se jen předvyplní. BR-04 (HPC jen BEV) se vyhodnocuje nad typem vozu v rezervaci (služba i trigger).
 - **Důsledky:** jeden účet může rezervovat pro různá auta; fyzické ověření vozu na místě zůstává neznámou z Project Frame.
 
-## C03 Část A – AS-IS: jak dnes funguje Confirm Reservation
+## C03 část A – jak funguje Confirm Reservation
 
-Vzali jsme Confirm Reservation, protože se v něm u nás rozhoduje i o schvalování (AC stanice se potvrdí hned, DC/HPC jdou do PENDING_APPROVAL). Všechno níže jsme dohledali v kódu na tagu `v0.2.3` a ověřili testy nebo během `scripts/verify_c02.py`.
+Vybrali jsme Confirm Reservation, protože se tam rozhoduje i o schvalování (AC stanice se potvrdí hned, DC a HPC čekají na admina).
 
 ### A1. Scénář
 
 | Položka | Hodnota |
 | --- | --- |
-| Scénář / operace | OP-03 Confirm Reservation |
+| Scénář | Confirm Reservation (OP-03) |
 | Požadavky | REQ-03, REQ-04 |
-| Pravidla / invarianty | BR-02 (blokující stavy se nepřekrývají), BR-05 (DRAFT platí 5 min), BR-06 (DC/HPC se schvalují do T_start − 15 min) |
+| Pravidla | BR-02, BR-06 |
 | Baseline | v0.2 |
 
 ### A2. Hlavní průchod
 
-Uživatel potvrzuje svůj DRAFT, který s ničím nekoliduje.
+| Krok | Kde to je v kódu |
+| --- | --- |
+| přijmout požadavek | `views.py` – `confirm_reservation()`, ta zavolá `_run_action()` |
+| zkontrolovat přihlášení | `auth.py` – `login_required` (a CSRF v `security.py`) |
+| načíst rezervaci | `ReservationService.confirm()` – `_get_reservation_row()` |
+| ověřit, že jde potvrdit | `confirm()` – musí to být naše rezervace ve stavu DRAFT a nesmí být po 5 minutách |
+| zjistit konflikt | `confirm()` – `_blocking_overlaps()` hledá jinou CONFIRMED nebo PENDING_APPROVAL rezervaci ve stejném čase |
+| změnit stav | `confirm()` – AC stanice → CONFIRMED, DC/HPC → PENDING_APPROVAL |
+| uložit | `db.py` – `transaction()`, celé to běží v `BEGIN IMMEDIATE` a na konci je `COMMIT` |
 
-| Krok scénáře z C02 | Realizace v kódu | Doklad |
-| --- | --- | --- |
-| přijmout požadavek na potvrzení | `views.py` `confirm_reservation()` (route `POST /reservations/<id>/confirm`) → `_run_action("confirm", …)` | `views.py` ř. 266–269, 244–263 |
-| ověřit přihlášení a CSRF | `auth.py` `login_required`, `security.py` `csrf_protect()` (běží před view) | `auth.py` ř. 36, `security.py` ř. 22; `test_post_without_csrf_token_is_rejected` |
-| propadnout staré návrhy (BR-05) | `ReservationService.confirm()` volá `expire_overdue()`, což je samostatný `UPDATE … SET state='EXPIRED'` ještě před transakcí | `services/reservations.py` ř. 445, 171–188; `test_op03_draft_older_than_5_minutes_is_expired` |
-| otevřít transakci | `_atomic()` → `db.transaction()` → `BEGIN IMMEDIATE` | `services/reservations.py` ř. 446, 148; `db.py` ř. 47–57 |
-| načíst Reservation | `_get_reservation_row()` (`SELECT * FROM reservations WHERE id = ?`) | `services/reservations.py` ř. 447, 209 |
-| ověřit, že přechod je povolený | vlastník, stav DRAFT, začátek v budoucnu | `services/reservations.py` ř. 448–456; `test_op03_only_owner_and_only_from_draft` |
-| rozhodnout, jestli je potřeba schválení (BR-06) | `requires_approval(station)` = výkon ≥ 50 kW; u DC/HPC navíc kontrola `now > start − 15 min` | `services/reservations.py` ř. 459–465, 136 |
-| vyhodnotit konflikt (BR-02) | `_blocking_overlaps()`: SELECT na CONFIRMED a PENDING_APPROVAL na stejné stanici s překryvem | `services/reservations.py` ř. 466, 286 |
-| změnit stav | AC: `_set_state(CONFIRMED)`; DC/HPC: `UPDATE … state='PENDING_APPROVAL', approval_deadline=…` | `services/reservations.py` ř. 468–476, 551; `test_op03_ac_draft_without_collision_is_confirmed_immediately`, `test_op03_v02_dc_hpc_draft_goes_to_pending_approval` |
-| uložit výsledek | `COMMIT` při odchodu z `transaction()`; při UPDATE ještě proběhnou DB triggery | `db.py` ř. 57; `schema.sql` ř. 70, 107, 120 |
-| vrátit výsledek | JSON: rezervace se stavem (200); formulář: flash + redirect na Moje rezervace | `views.py` ř. 259–263; `test_json_actions_and_status_codes` |
+Ověřili jsme to testy `test_op03_...` v `tests/test_reservations.py`.
 
-### A3. Chybová větev: konflikt → odmítnout
+### A3. Chybová větev – konflikt
 
-| Co říká v0.2 | Kde se podmínka zjistí | Kde se rozhodne výsledek | Co dostane volající |
+| Co říká v0.2 | Kde se to zjistí | Kde se rozhodne | Co dostane uživatel |
 | --- | --- | --- | --- |
-| Interval koliduje s CONFIRMED nebo PENDING_APPROVAL → odmítnuto, rezervace zůstává DRAFT | `_blocking_overlaps()` (`services/reservations.py` ř. 286). Pojistka: trigger `trg_reservations_no_overlap` při UPDATE (`schema.sql` ř. 70) | `confirm()` vyhodí `ConflictError` (ř. 466–467), `transaction()` udělá `ROLLBACK` (`db.py` ř. 54). Chybu z triggeru převede `_atomic()` (ř. 148–157) na stejnou `ConflictError` | JSON: `409` + text chyby (`views.py` `_status()` ř. 59–65, `_run_action()` ř. 252). Formulář: flash s chybou, redirect. Stav zůstává DRAFT |
+| když se termín překrývá, potvrzení se odmítne a rezervace zůstane DRAFT | `_blocking_overlaps()` v `ReservationService` | `confirm()` vyhodí `ConflictError`, transakce se vrátí (`ROLLBACK`) | v API chyba 409, ve webu červená hláška. Rezervace zůstane DRAFT |
 
-Doklad: `test_op03_collision_with_confirmed_is_rejected_and_stays_draft`, `test_op03_v02_collision_with_pending_approval_is_rejected`, běh `verify_c02.py` příklad V2b: `409 Termín se na této stanici překrývá … -> stav DRAFT`.
+Zkoušeli jsme to i ve skriptu `scripts/verify_c02.py` (příklad V2b vrátil 409).
 
-Rozdíl proti v0.2 jsme v této větvi nenašli. Jedna věc navíc:
+Rozdíl proti specifikaci jsme nenašli. Jen `confirm()` ještě jednou kontroluje, že PHEV nejede na HPC, i když to specifikace u OP-03 nepíše (kontroluje se to už při vytvoření).
 
-| Specifikace | Implementace | Doklad |
+### A4. Hlavní části
+
+| Část | Co tam je | Co dělá |
 | --- | --- | --- |
-| OP-03 nekontroluje kompatibilitu vozu (to dělá OP-02) | `confirm()` ji kontroluje znovu (`check_vehicle_allowed`, BR-04) | `services/reservations.py` ř. 458 |
+| Web | `views.py`, `auth.py`, `security.py` | přijme požadavek, zkontroluje přihlášení a vrátí odpověď |
+| ReservationService | `services/reservations.py` | rozhodne, jestli se potvrdí, a pouští SQL dotazy |
+| Práce s DB | `db.py` | otevírá spojení a dělá transakce |
+| Databáze | SQLite `instance/charging.db`, `schema.sql` | ukládá rezervace, triggery hlídají překryv |
 
-Chování to nemění, protože OP-02 by takový návrh vůbec nevytvořilo. Jde jen o pojistku.
+### A5. Stav a pravidlo
 
-### A4. Hlavní části implementace
+- **Kde je stav:** v tabulce `reservations`, sloupec `state` (SQLite).
+- **Kdo mění stav:** `ReservationService.confirm()`, udělá `UPDATE` na CONFIRMED nebo PENDING_APPROVAL.
+- **Pravidlo BR-02 (žádný překryv):** hlídá se dvakrát. Jednou ve službě (`_blocking_overlaps()`), podruhé v databázi triggerem `trg_reservations_no_overlap`. Když najde překryv, stav se nezmění.
 
-Aplikace je malá, takže bereme moduly / jednu třídu.
-
-| Část implementace | Typ / obsah | Role v tomto scénáři | Doklad |
-| --- | --- | --- | --- |
-| Přihlášení a CSRF | modul: `auth.py` (`load_logged_in_user`, `login_required`), `security.py` (`csrf_protect`) | pustí dál jen přihlášeného uživatele s platným CSRF tokenem | `auth.py` ř. 24–46, `security.py` ř. 21–28 |
-| Web vrstva | modul: `views.py` (`confirm_reservation`, `_run_action`, `_status`, `_service`) | přijme požadavek, zavolá službu, výsledek převede na HTTP odpověď | `views.py` ř. 52–65, 244–269 |
-| Rezervační logika | třída: `ReservationService` v `services/reservations.py` (+ funkce `requires_approval`, `_atomic`) | rozhodne o přechodu stavu a sama pustí SQL dotazy | `services/reservations.py` ř. 441–477 |
-| Přístup k DB | modul: `db.py` (`get_db`, `connect`, `transaction`) | otevře spojení a řídí transakci `BEGIN IMMEDIATE / COMMIT / ROLLBACK` | `db.py` ř. 38–57, 79 |
-| Databáze | SQLite soubor `instance/charging.db`, schéma a triggery v `schema.sql` | drží stav a podruhé hlídá BR-02 a povolené přechody | `schema.sql` ř. 34, 70, 107, 120 |
-
-### A5. Stav, změna stavu a pravidlo
-
-Stav
-
-| Otázka | Odpověď | Doklad |
-| --- | --- | --- |
-| Kde je stav Reservation trvale uložen? | sloupec `reservations.state` v SQLite (`instance/charging.db`), u DC/HPC ještě `approval_deadline` | `schema.sql` ř. 34; `scripts/spike_persistence.py` (zápis → nové spojení → načtení) |
-| Který kód rozhoduje/provádí přechod? | rozhoduje `ReservationService.confirm()` (DRAFT → CONFIRMED / PENDING_APPROVAL), provádí ho UPDATE ve stejné metodě. Triggery `trg_reservations_state_transition` a `trg_reservations_approval_policy` přechod ještě ověří. Přechod DRAFT → EXPIRED dělá `expire_overdue()` | `services/reservations.py` ř. 468–476, 171; `schema.sql` ř. 107, 120 |
-
-Pravidlo BR-02
-
-| Otázka | Odpověď | Doklad |
-| --- | --- | --- |
-| Kde se zjistí podmínka pravidla? | na dvou místech: `_blocking_overlaps()` ve službě a trigger `trg_reservations_no_overlap` v DB | `services/reservations.py` ř. 286; `schema.sql` ř. 70 |
-| Kde se podle výsledku rozhodne? | služba: `confirm()` ř. 466–467 (`ConflictError`); DB: trigger `RAISE(ABORT, 'BLOCKING_OVERLAP')`, který `_atomic()` přeloží na `ConflictError` | `test_db_triggers_enforce_approval_policy_overlap_and_transitions` |
-| Kde se provede výsledná změna stavu? | jen když konflikt není: UPDATE v `confirm()` ř. 470 / 476, uloží se `COMMIT`em. Při konfliktu `ROLLBACK`, stav se nemění | `db.py` ř. 50–57 |
-
-Souběh (REQ-04) drží `BEGIN IMMEDIATE`: kontrola i zápis běží pod zápisovým zámkem, takže druhý request čeká a pak už konflikt vidí. Ověřeno testem `test_op03_req04_concurrent_confirms_allow_exactly_one` (10 vláken, 10 spojení, projde právě jedno).
+Souběh řeší `BEGIN IMMEDIATE`. Máme test, kde 10 lidí potvrzuje najednou a projde jen jeden (`test_op03_req04_concurrent_confirms_allow_exactly_one`).
 
 ### A6. Závislosti
 
-| Závislost | Kde se napojuje na náš kód | Která část zná její technické API | Doklad |
-| --- | --- | --- | --- |
-| databáze SQLite | `db.connect()` / `get_db()`, spojení se předá do `ReservationService` | `db.py` (spojení, transakce) a hlavně `ReservationService`, který píše SQL přímo (žádná repository vrstva) | `db.py` ř. 38–57; `services/reservations.py` ř. 209, 286, 470 |
-| Notification Service | v Confirm se nepoužívá. `confirm()` nevolá `_notify()`, notifikace jdou až z approve / reject / cancel | – | `services/reservations.py`: `_notify` jen na ř. 514, 522, 528, 562 |
-| IdP | nemáme. Přihlášení je lokální (hash hesla v tabulce `users`, Flask session cookie podepsaná `SECRET_KEY`) | `auth.py` | `auth.py` ř. 24–46 |
+| Závislost | Kde | Poznámka |
+| --- | --- | --- |
+| SQLite | `db.py`, SQL je přímo v `ReservationService` | jiná závislost tu není |
+| Notification Service | – | při potvrzení se nevolá, posílá se až při schválení, zamítnutí nebo zrušení |
+| IdP | – | nemáme, přihlášení je jen naše (tabulka `users`) |
 
-### A7. AS-IS diagram
+### A7. Diagram
 
 ```
-   prohlížeč / JSON klient
-         |
-         | POST /reservations/<id>/confirm  (session cookie + CSRF token)
-         v
-+------------------------------- Application code -------------------------------+
-|                                                                                |
-|  [Přihlášení a CSRF]  module                                                   |
-|  role: pustí dál jen přihlášeného uživatele s platným CSRF tokenem -----+      |
-|       |                                                                 |      |
-|       | zavolá view                                                     |      |
-|       v                                                    SELECT users |      |
-|  [Web vrstva]  module                                                   |      |
-|  role: přijme požadavek, vrátí 200 / 409 nebo flash + redirect          |      |
-|       |                                |                                |      |
-|       | confirm(user_id, id)           | get_db()                       |      |
-|       v                                v                                |      |
-|  [ReservationService]  class         [Přístup k DB]  module             |      |
-|  role: rozhodne o přechodu stavu     role: spojení a transakce          |      |
-|       |      --- transaction() --->    |                                |      |
-|       |                                |                                |      |
-|       |                                |                                |      |
-+-------|--------------------------------|--------------------------------|------+
-        | UPDATE expire, SELECT          | BEGIN IMMEDIATE /              |
-        | reservation + overlaps,        | COMMIT / ROLLBACK              |
-        | UPDATE state                   |                                |
-        v                                v                                v
-   [SQLite instance/charging.db]  database
-   tabulky reservations, users; triggery BR-02 a povolených přechodů stavů
+  uživatel (prohlížeč)
+        |
+        | POST /reservations/<id>/confirm
+        v
++--------------------- Application code ---------------------+
+|                                                            |
+|  [Web]  views.py, auth.py                                  |
+|  přijme požadavek, zkontroluje přihlášení                  |
+|        |                                                   |
+|        | confirm()                                         |
+|        v                                                   |
+|  [ReservationService]                                      |
+|  rozhodne o potvrzení                                      |
+|        |                                                   |
+|        | transaction()                                     |
+|        v                                                   |
+|  [db.py]                                                   |
+|  spojení a transakce                                       |
+|                                                            |
++------------------------------------------------------------+
+        |
+        | SELECT / UPDATE reservations
+        v
+  [SQLite databáze]  (triggery hlídají překryv)
 ```
 
-Co je v blocích:
-- Přihlášení a CSRF: `auth.py` – `load_logged_in_user()`, `login_required`; `security.py` – `csrf_protect()`
-- Web vrstva: `views.py` – `confirm_reservation()`, `_run_action()`, `_status()`, `_service()`
-- ReservationService: `services/reservations.py` – `confirm()`, `expire_overdue()`, `_get_reservation_row()`, `_blocking_overlaps()`, `_set_state()`, funkce `requires_approval()`, `_atomic()`
-- Přístup k DB: `db.py` – `get_db()`, `connect()`, `transaction()`
-- SQLite: `schema.sql` – tabulka `reservations`, triggery `trg_reservations_no_overlap`, `trg_reservations_state_transition`, `trg_reservations_approval_policy`
+Notification Service v diagramu není, protože se při potvrzení nepoužívá.
 
-Notification Service v diagramu schválně není, v tomhle scénáři se nevolá (viz A6).
+### A8. Otázka na příště
 
-### A8. Otázka pro další část C03
-
-| Položka | Obsah |
+| | |
 | --- | --- |
-| Otázka | Vydrží potvrzování 10× souběh (naše future pressure Q), když SQLite pustí najednou jen jeden zápis a každý confirm spouští dva zápisové příkazy (`expire_overdue()` a pak transakci)? |
-| Doklad | `db.transaction()` začíná `BEGIN IMMEDIATE` (`db.py` ř. 50), `connect()` má `timeout=10` (ř. 40), `confirm()` volá `expire_overdue()` mimo transakci (`services/reservations.py` ř. 445). Test s 10 vlákny ověřuje jen správnost (projde právě jeden), ne čekání ani chyby `database is locked` při větší zátěži. |
-| Proč je důležitá | BR-02 při souběhu dnes drží právě díky tomu, že se všechny zápisy řadí za sebe. Při 10× více požadavcích to může znamenat dlouhé čekání nebo chyby po `timeout=10`. Potřebujeme rozhodnout, jak BR-02 hlídat jinak (DB se zámky na řádky nebo exclusion constraint, fronta požadavků), aniž bychom ho porušili. |
+| Otázka | Zvládne to SQLite, když bude chtít potvrzovat 10× víc lidí najednou? |
+| Proč si to myslíme | `BEGIN IMMEDIATE` pustí najednou jen jeden zápis, ostatní čekají (max 10 s, `timeout=10` v `db.py`). Test s 10 vlákny jen ukáže, že projde jeden, ale neměří, jak dlouho to trvá. |
+| Proč je to důležité | Kvůli future pressure (10× víc rezervací najednou) a BR-02 nesmí přestat platit. |
