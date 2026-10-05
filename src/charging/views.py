@@ -9,6 +9,7 @@ from .auth import admin_required, login_required
 from .db import get_db
 from .services import notifications
 from .services.notifications import DatabaseChannel, NotificationService
+from .services.outbox import OutboxDispatcher
 from .services.reservations import (
     BOOKING_HORIZON_DAYS,
     CANCELLED,
@@ -50,10 +51,24 @@ MONTHS = ("ledna", "února", "března", "dubna", "května", "června", "červenc
 
 
 def _service() -> ReservationService:
-    conn = get_db()
-    clock = current_app.config["CLOCK"]
-    notifier = NotificationService(conn, DatabaseChannel(conn, clock))
-    return ReservationService(conn, notifier, clock)
+    return ReservationService(get_db(), current_app.config["CLOCK"])
+
+
+def _dispatcher() -> OutboxDispatcher:
+    conn, clock = get_db(), current_app.config["CLOCK"]
+    return OutboxDispatcher(conn, NotificationService(conn, DatabaseChannel(conn, clock)), clock)
+
+
+@bp.after_app_request
+def dispatch_outbox(response):
+    """ADR-01: po každém POST doručíme čekající události z outboxu. Nedoručené zůstanou
+    v outboxu a zkusí se znovu příště (nebo skriptem scripts/dispatch_notifications.py)."""
+    if request.method == "POST":
+        try:
+            _dispatcher().dispatch()
+        except Exception:
+            current_app.logger.exception("Outbox dispatch failed")
+    return response
 
 
 def _status(exc: ReservationError) -> int:

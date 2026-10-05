@@ -1,0 +1,61 @@
+@startuml
+!pragma layout smetana
+skinparam defaultFontName Arial
+title H2 – návrhový třídní diagram (Approve + notifikace)
+
+class "views.py" as views <<module>> {
+  +approve_reservation(id)
+  +dispatch_outbox(response)
+}
+class ReservationService {
+  +confirm(user_id, id) : str
+  +approve(admin_id, id) : str
+  +reject(admin_id, id) : str
+  +cancel(actor_id, id) : str
+  +expire_overdue() : int
+  -_decide(admin_id, id, new_state)
+  -_blocking_overlaps(station, start, end)
+  -_emit(event, payload)
+}
+class OutboxDispatcher {
+  +dispatch() : int
+  +pending() : list
+  -_deliver(event, payload)
+}
+class NotificationService {
+  +reservation_approved(res)
+  +reservation_rejected(res)
+  +reservation_cancelled_by_admin(res)
+  +slot_released(station_id, start, end, exclude_user_id)
+}
+interface NotificationChannel {
+  +send(user_id, message)
+}
+class DatabaseChannel
+class Reservation <<entity, tabulka reservations>> {
+  id
+  state
+  start_time, end_time
+  approval_deadline
+}
+class OutboxEvent <<tabulka outbox>> {
+  event
+  payload_json
+  attempts
+  last_error
+  sent_at
+}
+
+views --> ReservationService : approve()
+views --> OutboxDispatcher : dispatch()
+ReservationService ..> Reservation : mění state
+ReservationService ..> OutboxEvent : zapisuje
+OutboxDispatcher ..> OutboxEvent : čte / označí sent
+OutboxDispatcher --> NotificationService : volá událost
+NotificationService --> NotificationChannel
+DatabaseChannel ..|> NotificationChannel
+note bottom of ReservationService
+  nezná NotificationService
+  (kontroluje tests/test_architecture.py)
+end note
+@enduml

@@ -1,0 +1,35 @@
+@startuml
+skinparam defaultFontName Arial
+title H1 – Approve Reservation (TO-BE, ADR-01)
+actor Admin
+participant "Web UI / API\n(views.py)" as web
+participant "Reservation Management\n(ReservationService)" as rm
+database "SQLite" as db
+participant "Notification Integration\n(OutboxDispatcher)" as ni
+participant "Notification Service\n(NotificationService + kanál)" as ns
+
+Admin -> web : POST /reservations/{id}/approve
+web -> rm : approve(admin_id, id)
+rm -> db : expire_overdue() – UPDATE propadlé
+rm -> db : BEGIN IMMEDIATE
+rm -> db : SELECT uživatel, rezervace
+rm -> rm : je admin? stav PENDING_APPROVAL?\nlhůta T_start − 15 min
+rm -> db : UPDATE state = CONFIRMED
+rm -> db : INSERT outbox (reservation_approved)
+rm -> db : COMMIT
+rm --> web : CONFIRMED
+== after_request (stejný HTTP request) ==
+web -> ni : dispatch()
+ni -> db : SELECT nedoručené události
+ni -> db : BEGIN IMMEDIATE
+ni -> ns : reservation_approved(rezervace)
+alt doručení OK
+  ns --> ni : ok
+  ni -> db : UPDATE outbox SET sent_at, COMMIT
+else Notification Service selže
+  ns --> ni : chyba
+  ni -> db : ROLLBACK, UPDATE attempts + 1, last_error
+  note over ni, db : rezervace zůstává CONFIRMED,\nudálost čeká na další dispatch\n(další POST nebo dispatch_notifications.py)
+end
+web --> Admin : 302 + hláška / 200 JSON
+@enduml

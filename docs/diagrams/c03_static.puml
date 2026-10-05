@@ -1,0 +1,27 @@
+@startuml
+!pragma layout smetana
+skinparam defaultFontName Arial
+skinparam componentStyle rectangle
+title G2 – TO-BE statická architektura
+
+actor "Řidič / Admin" as user
+package "Reservation System (Flask aplikace)" {
+  [Web UI / API\n(views.py)\nrole: přijme request, vrátí odpověď] as web
+  [Access Control\n(auth.py, security.py)\nrole: přihlášení, CSRF, role\nowns: session uživatele] as acl
+  [Reservation Management\n(ReservationService)\nrole: lifecycle, BR-02, schvalování\nowns: Reservation.state, outbox zápis] as rm
+  [Notification Integration\n(OutboxDispatcher, NotificationService)\nrole: doručení + retry\nowns: stav doručení událostí] as ni
+  [Persistence\n(db.py, schema.sql)\nrole: spojení, transakce, triggery] as pers
+}
+database "SQLite\n(reservations, users,\noutbox, notifications)" as db
+[Notification Service\n(dnes in-app schránka)] as ns
+
+user --> web : HTTP požadavky
+web --> acl : ověř uživatele / CSRF
+web --> rm : create / confirm / cancel / approve / reject
+web --> ni : dispatch() po POST
+rm --> pers : transakce, SQL
+rm ..> db : INSERT outbox event\n(ve stejné transakci)
+ni --> pers : čti / označ události
+ni --> ns : send(user, zpráva)
+pers --> db : read / write
+@enduml

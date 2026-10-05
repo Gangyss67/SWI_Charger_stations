@@ -3,6 +3,7 @@
 Každá operace OP-01..OP-05 má testy pojmenované podle příkladů ověření ze specifikace;
 "teď" je 15.09.2026 08:00 (viz conftest.clock).
 """
+import json
 import sqlite3
 import threading
 from datetime import date, datetime
@@ -29,7 +30,7 @@ from charging.services.reservations import (
     ReservationError,
     ReservationService,
 )
-from conftest import make_user
+from conftest import deliver, make_user
 
 AC01, AC02, DC07, HPC08, HPC09 = 1, 2, 7, 8, 9
 PLATE = "1AB 2345"
@@ -81,6 +82,7 @@ def check(svc, station, start, slots, vehicle="BEV"):
 
 
 def messages_for(conn, user_id):
+    deliver(conn)
     return [row["message"] for row in notifications.list_for_user(conn, user_id)]
 
 
@@ -279,7 +281,7 @@ def test_op03_only_owner_and_only_from_draft(svc, users):
 def test_op03_req04_concurrent_confirms_allow_exactly_one(conn, db_path, clock, station, expected):
     """REQ-04 + future pressure Q: 10 souběžných potvrzení kolidujících DRAFT (každé ve vlastním
     připojení a vlákně) -> do blokujícího stavu přejde právě jedno."""
-    setup = ReservationService(conn, None, clock)
+    setup = ReservationService(conn, clock)
     users = [make_user(conn, f"race{i}", "BEV") for i in range(10)]
     drafts = [setup.create(uid, station, at(10), 2, "BEV", PLATE) for uid in users]
     barrier = threading.Barrier(len(users))
@@ -288,7 +290,7 @@ def test_op03_req04_concurrent_confirms_allow_exactly_one(conn, db_path, clock, 
     def worker(user_id, reservation_id):
         c = connect(db_path)
         try:
-            svc = ReservationService(c, None, clock)
+            svc = ReservationService(c, clock)
             barrier.wait()
             outcomes.append(svc.confirm(user_id, reservation_id))
         except ConflictError:
@@ -525,16 +527,50 @@ def test_released_dc_slot_notifies_phev_on_weaker_station(svc, conn, users):
     assert any("DC 07 (50 kW)" in m for m in messages_for(conn, users["phev"]))
 
 
-def test_notification_failure_does_not_break_reservation(conn, users, clock):
-    class BrokenNotifier:
-        def __getattr__(self, name):
-            def fail(*args, **kwargs):
-                raise TimeoutError("notification provider down")
+def outbox(conn):
+    return conn.execute("SELECT * FROM outbox ORDER BY id").fetchall()
 
-            return fail
 
-    svc = ReservationService(conn, BrokenNotifier(), clock)
+class BrokenNotifier:
+    def __getattr__(self, name):
+        def fail(*args, **kwargs):
+            raise TimeoutError("notification provider down")
+
+        return fail
+
+
+def test_adr01_event_is_written_in_same_transaction_and_delivered_later(svc, conn, users):
     rid = pending(svc, users, "ev", HPC08, at(10), 1)
     svc.approve(users["admin"], rid)
-    svc.cancel(users["ev"], rid)
-    assert state(conn, rid) == CANCELLED
+    [event] = outbox(conn)
+    assert event["event"] == "reservation_approved" and event["sent_at"] is None
+    assert json.loads(event["payload"])["reservation"]["id"] == rid
+    assert notifications.list_for_user(conn, users["ev"]) == []  # ještě nedoručeno
+    assert deliver(conn) == 1
+    assert outbox(conn)[0]["sent_at"] is not None
+    assert any("byla schválena" in m for m in messages_for(conn, users["ev"]))
+
+
+def test_adr01_rolled_back_operation_writes_no_event(svc, conn, users):
+    rid = pending(svc, users, "ev", HPC08, at(10), 1)
+    with pytest.raises(PermissionDeniedError):
+        svc.approve(users["ev2"], rid)  # ne-admin -> ROLLBACK
+    other = draft(svc, users, "ev2", HPC08, at(10), 1)
+    with pytest.raises(ConflictError):
+        svc.confirm(users["ev2"], other)
+    assert outbox(conn) == []
+
+
+def test_adr01_notification_failure_keeps_event_for_retry(svc, conn, users):
+    rid = pending(svc, users, "ev", HPC08, at(10), 1)
+    svc.approve(users["admin"], rid)
+    assert state(conn, rid) == CONFIRMED  # business změna platí i při výpadku Notification Service
+
+    assert deliver(conn, BrokenNotifier()) == 0
+    [event] = outbox(conn)
+    assert event["sent_at"] is None and event["attempts"] == 1 and "TimeoutError" in event["last_error"]
+    assert notifications.list_for_user(conn, users["ev"]) == []
+
+    assert deliver(conn) == 1  # další pokus už projde
+    assert any("byla schválena" in m for m in messages_for(conn, users["ev"]))
+    assert deliver(conn) == 0  # nedoručuje se dvakrát
