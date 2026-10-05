@@ -57,6 +57,20 @@ CREATE TABLE IF NOT EXISTS notifications (
 
 CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications (user_id, is_read);
 
+-- Outbox (ADR-01): události pro Notification Service zapsané ve stejné transakci jako změna
+-- rezervace. Doručuje je services/outbox.py, neúspěšné pokusy se opakují.
+CREATE TABLE IF NOT EXISTS outbox (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    event      TEXT    NOT NULL,
+    payload    TEXT    NOT NULL,  -- JSON
+    created_at TEXT    NOT NULL,
+    attempts   INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    sent_at    TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_outbox_unsent ON outbox (sent_at, id);
+
 -- Stavový diagram: každá rezervace vzniká jako DRAFT ([none] -> DRAFT, OP-02).
 CREATE TRIGGER IF NOT EXISTS trg_reservations_initial_state
 BEFORE INSERT ON reservations
@@ -127,4 +141,4 @@ BEGIN
     SELECT RAISE(ABORT, 'APPROVAL_REQUIRED');
 END;
 
-PRAGMA user_version = 2;
+PRAGMA user_version = 5;

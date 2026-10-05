@@ -45,20 +45,20 @@ class NotificationService:
     def reservation_approved(self, res: dict) -> None:
         self.channel.send(
             res["user_id"],
-            f"Vaše žádost {_describe(res)} byla schválena administrátorem – rezervace je potvrzena (CONFIRMED).",
+            f"Vaše žádost {_describe(res)} byla schválena administrátorem. Rezervace je potvrzená.",
         )
 
     def reservation_rejected(self, res: dict) -> None:
         self.channel.send(
             res["user_id"],
-            f"Vaše žádost {_describe(res)} byla zamítnuta administrátorem (REJECTED). "
-            f"Termín je opět volný – zvolte jiný čas nebo stanici.",
+            f"Vaše žádost {_describe(res)} byla zamítnuta administrátorem. "
+            f"Termín je znovu volný, zvolte jiný čas nebo stanici.",
         )
 
     def reservation_cancelled_by_admin(self, res: dict) -> None:
         self.channel.send(
             res["user_id"],
-            f"Vaše rezervace {_describe(res)} byla zrušena administrátorem ({res['state']}).",
+            f"Vaše rezervace {_describe(res)} byla zrušena administrátorem.",
         )
 
     def slot_released(self, station_id: int, start: datetime, end: datetime, exclude_user_id: int) -> None:

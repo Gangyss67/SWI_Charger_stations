@@ -5,6 +5,7 @@ import pytest
 from charging import create_app
 from charging.db import connect, init_schema
 from charging.services.notifications import DatabaseChannel, NotificationService
+from charging.services.outbox import OutboxDispatcher
 from charging.services.reservations import ReservationService
 from charging.timeutil import format_ts
 
@@ -38,7 +39,12 @@ def conn(db_path):
 
 @pytest.fixture
 def svc(conn, clock):
-    return ReservationService(conn, NotificationService(conn, DatabaseChannel(conn, clock)), clock)
+    return ReservationService(conn, clock)
+
+
+def deliver(conn, notifier=None) -> int:
+    """Doručí události z outboxu (v aplikaci to dělá after_request / skript)."""
+    return OutboxDispatcher(conn, notifier or NotificationService(conn, DatabaseChannel(conn))).dispatch()
 
 
 def make_user(conn, username: str, vehicle_type: str = "BEV", is_admin: bool = False) -> int:

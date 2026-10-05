@@ -1,0 +1,65 @@
+@startuml
+!pragma layout smetana
+skinparam defaultFontName Arial
+hide empty methods
+title C1 – doménový model (slice schvalování)
+
+class User {
+  username
+  is_admin
+  default_vehicle_type
+}
+class Station {
+  name
+  power_kw
+  is_high_speed
+  /requires_approval = power_kw >= 50
+}
+class Reservation {
+  state : ReservationState
+  vehicle_type : VehicleType
+  license_plate
+  draft_expires_at
+  approval_deadline
+}
+class TimeInterval <<value object>> {
+  start
+  end
+  interval_30min_bloky
+}
+class Notification {
+  message
+  is_read
+}
+enum ReservationState {
+  DRAFT
+  PENDING_APPROVAL
+  CONFIRMED
+  CANCELLED
+  CANCELLED_BY_ADMIN
+  REJECTED
+  EXPIRED
+}
+enum VehicleType {
+  BEV
+  PHEV
+}
+
+User "1" -- "0..*" Reservation : vytvořil >
+Station "1" -- "0..*" Reservation : rezervuje <
+Reservation *-- "1" TimeInterval
+User "1" -- "0..*" Notification : dostává >
+Reservation ..> ReservationState
+Reservation ..> VehicleType
+
+note right of Station
+  BR-02: blokující rezervace
+  (CONFIRMED, PENDING_APPROVAL)
+  jedné stanice se nepřekrývají
+  BR-04: HPC jen BEV
+end note
+note bottom of User
+  admin rozhoduje o
+  PENDING_APPROVAL (OP-05)
+end note
+@enduml

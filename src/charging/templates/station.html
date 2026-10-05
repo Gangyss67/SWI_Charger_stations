@@ -1,77 +1,92 @@
 {% extends "base.html" %}
-{% from "_macros.html" import station_status, station_tags %}
+{% from "_macros.html" import rules, vehicle_select, bay_no, bay_kind %}
 {% block title %}{{ station.name }}{% endblock %}
 {% block content %}
-<p><a href="{{ url_for('main.index') }}">← Všechny stanice</a></p>
-<h1>{{ station.name }} <small class="muted">{{ station.power_kw }} kW</small>
-  {{ station_tags(station.is_high_speed, needs_approval) }}
-</h1>
-
-<div class="day-nav">
-  {% if prev_day %}<a class="btn small ghost" href="{{ url_for('main.station_detail', station_id=station.id, date=prev_day.isoformat()) }}">← {{ prev_day.strftime('%d.%m.') }}</a>{% endif %}
-  <form method="get" class="inline">
-    <input type="date" name="date" value="{{ day.isoformat() }}" min="{{ today.isoformat() }}" max="{{ last_day.isoformat() }}" onchange="this.form.submit()">
-  </form>
-  {% if next_day %}<a class="btn small ghost" href="{{ url_for('main.station_detail', station_id=station.id, date=next_day.isoformat()) }}">{{ next_day.strftime('%d.%m.') }} →</a>{% endif %}
-</div>
-
-<div class="legend">
-  {{ station_status('FREE') }} {{ station_status('PENDING') }} {{ station_status('RESERVED') }} {{ station_status('IN_USE') }} {{ station_status('PAST') }}
-</div>
-
-<div class="slots">
-  {% for slot in slots %}
-    {% if slot.state == 'FREE' and g.user %}
-      <a class="slot slot-free{% if slot.time == selected_time %} selected{% endif %}" href="{{ url_for('main.station_detail', station_id=station.id, date=day.isoformat(), time=slot.time) }}#form">
-    {% else %}
-      <div class="slot slot-{{ slot.state|lower }}{% if slot.mine %} mine{% endif %}">
-    {% endif %}
-        <span class="slot-time">{{ slot.time }}</span>
-        <span class="slot-label">{% if slot.mine %}Vaše{% elif slot.state == 'FREE' %}Volno{% elif slot.state == 'RESERVED' %}Rezervováno{% elif slot.state == 'PENDING' %}Ke schválení{% elif slot.state == 'IN_USE' %}Používá se{% else %}—{% endif %}</span>
-    {% if slot.state == 'FREE' and g.user %}</a>{% else %}</div>{% endif %}
-  {% endfor %}
-</div>
-
-<section id="form" class="card form-card">
-  <h2>Nová rezervace</h2>
-  {% if not g.user %}
-    <p><a href="{{ url_for('auth.login') }}">Přihlaste se</a> pro vytvoření rezervace.</p>
-  {% else %}
-  <form method="post" action="{{ url_for('main.create_reservation') }}" class="form-row">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <input type="hidden" name="station_id" value="{{ station.id }}">
-    <label>Datum <input type="date" name="date" value="{{ day.isoformat() }}" min="{{ today.isoformat() }}" max="{{ last_day.isoformat() }}" required></label>
-    <label>Začátek
-      <select name="time" required>
-        {% for t in time_options %}<option value="{{ t }}"{% if t == selected_time %} selected{% endif %}>{{ t }}</option>{% endfor %}
-      </select>
-    </label>
-    <label>Délka
-      <select name="slots">
-        {% for n in range(1, max_slots + 1) %}<option value="{{ n }}"{% if n == selected_slots %} selected{% endif %}>{{ n * 30 }} min</option>{% endfor %}
-      </select>
-    </label>
-    <label>Typ vozu
-      <select name="vehicle_type">
-        {% for v in vehicle_types %}<option value="{{ v }}"{% if v == vehicle_type %} selected{% endif %}>{{ v }}</option>{% endfor %}
-      </select>
-    </label>
-    <label>SPZ <input name="license_plate" value="{{ license_plate }}" maxlength="12" placeholder="1AB 2345" required></label>
-    <div class="buttons">
-      <button class="btn ghost" name="action" value="draft">Vytvořit návrh</button>
-      <button class="btn" name="action" value="confirm">Vytvořit a potvrdit</button>
+<section class="stack">
+  <a href="{{ url_for('main.index') }}">← Parkoviště</a>
+  <div class="station-head">
+    <div class="station-no" aria-hidden="true">{{ bay_no(station.name) }}</div>
+    <div class="station-title">
+      <p class="eyebrow">Stání {{ bay_no(station.name) }}</p>
+      <h1>{{ bay_kind(station.name) }} {{ station.power_kw }} kW</h1>
+      {{ rules(station.is_high_speed, needs_approval) }}
     </div>
-  </form>
-  <p class="muted"><small>
-    Návrh (DRAFT) stanici neblokuje a platí 5 minut – do té doby ho potvrďte.
-    {% if needs_approval %}
-      Tato stanice má výkon ≥ 50 kW: potvrzením vznikne žádost <strong>PENDING_APPROVAL</strong>, která termín blokuje,
-      a administrátor ji musí schválit nejpozději 15 minut před začátkem, jinak propadne.
+  </div>
+</section>
+
+<section class="stack" aria-labelledby="day">
+  <div class="day-nav">
+    {% if prev_day %}<a class="btn small quiet" href="{{ url_for('main.station_detail', station_id=station.id, date=prev_day.isoformat()) }}" aria-label="Předchozí den">←</a>{% endif %}
+    <h2 id="day">{{ day_label }}</h2>
+    {% if next_day %}<a class="btn small quiet" href="{{ url_for('main.station_detail', station_id=station.id, date=next_day.isoformat()) }}" aria-label="Další den">→</a>{% endif %}
+    <form method="get" class="inline">
+      <label for="day-pick" class="note">Jiný den</label>
+      <input type="date" id="day-pick" name="date" value="{{ day.isoformat() }}" min="{{ today.isoformat() }}" max="{{ last_day.isoformat() }}" onchange="this.form.submit()">
+    </form>
+  </div>
+
+  <div class="table-wrap">
+    <div class="timeline">
+      {% for half in (slots[:24], slots[24:]) %}
+      <div class="tl-row">
+        {% for s in half if s.time.endswith(':00') %}<span class="tl-hour">{{ s.time[:2] }}</span>{% endfor %}
+        {% for slot in half %}
+          {% set label = slot.time ~ '–' ~ slot.end.strftime('%H:%M') %}
+          {% if slot.state == 'FREE' and g.user %}
+            <a class="cell{% if slot.time == selected_time %} selected{% endif %}" href="{{ url_for('main.station_detail', station_id=station.id, date=day.isoformat(), time=slot.time) }}#form" title="{{ label }} volno, vybrat začátek" aria-label="{{ label }} volno"></a>
+          {% else %}
+            <span class="cell {{ slot.state|lower }}{% if slot.mine %} mine{% endif %}" title="{{ label }}"></span>
+          {% endif %}
+        {% endfor %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  <div class="legend">
+    <span><i class="cell"></i>volno</span>
+    <span><i class="cell pending"></i>čeká na schválení</span>
+    <span><i class="cell reserved"></i>rezervováno</span>
+    <span><i class="cell in_use"></i>právě nabíjí</span>
+    <span><i class="cell past"></i>uplynulo</span>
+    {% if g.user %}<span><i class="cell mine"></i>vaše</span>{% endif %}
+  </div>
+</section>
+
+<section class="two-col" id="form">
+  <div class="panel">
+    <h2>Nová rezervace</h2>
+    {% if not g.user %}
+      <p><a href="{{ url_for('auth.login') }}">Přihlaste se</a> a vyberte začátek na časové ose.</p>
     {% else %}
-      Potvrzením na AC stanici vznikne rovnou závazná rezervace <strong>CONFIRMED</strong>.
+    <form method="post" action="{{ url_for('main.create_reservation') }}" class="fields">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="station_id" value="{{ station.id }}">
+      <label class="field" for="r-date"><span>Datum</span>
+        <input type="date" id="r-date" name="date" value="{{ day.isoformat() }}" min="{{ today.isoformat() }}" max="{{ last_day.isoformat() }}" required></label>
+      <label class="field" for="r-time"><span>Začátek</span>
+        <select id="r-time" name="time" required>
+          {% for t in time_options %}<option value="{{ t }}"{% if t == selected_time %} selected{% endif %}>{{ t }}</option>{% endfor %}
+        </select></label>
+      <label class="field" for="r-slots"><span>Délka</span>
+        <select id="r-slots" name="slots">
+          {% for n in range(1, max_slots + 1) %}<option value="{{ n }}"{% if n == selected_slots %} selected{% endif %}>{{ '%d:%02d' % (n // 2, 30 * (n % 2)) }} h</option>{% endfor %}
+        </select></label>
+      <label class="field" for="r-vehicle"><span>Typ vozu</span>{{ vehicle_select(vehicle_types, vehicle_type, 'r-vehicle') }}</label>
+      <label class="field" for="r-plate"><span>SPZ</span>
+        <input id="r-plate" name="license_plate" value="{{ license_plate }}" maxlength="12" placeholder="1AB 2345" autocomplete="off" required></label>
+      <button class="btn">Vytvořit návrh</button>
+    </form>
     {% endif %}
-    {% if station.is_high_speed %} HPC nabíječka je jen pro plně elektrické vozy (BEV).{% endif %}
-  </small></p>
-  {% endif %}
+  </div>
+  <aside class="rules">
+    <p><strong>Návrh platí 5 minut.</strong> Stání neblokuje, dokud ho v Mých rezervacích nepotvrdíte.</p>
+    {% if needs_approval %}
+    <p><strong>Se schválením.</strong> Po potvrzení musí rezervaci schválit administrátor, nejpozději 15 minut před začátkem. Do té doby je termín pro vás blokovaný.</p>
+    {% else %}
+    <p>Na AC stání platí rezervace hned po potvrzení.</p>
+    {% endif %}
+    {% if station.is_high_speed %}<p>HPC stání je jen pro elektromobily, plug-in hybrid sem nemůže.</p>{% endif %}
+    <p>Potvrzenou rezervaci zrušíte nejpozději 30 minut před začátkem.</p>
+  </aside>
 </section>
 {% endblock %}

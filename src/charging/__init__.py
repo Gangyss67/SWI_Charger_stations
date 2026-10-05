@@ -49,6 +49,7 @@ def create_app(test_config: dict | None = None) -> Flask:
 
     app.jinja_env.filters["timerange"] = format_range
     app.jinja_env.filters["hm"] = lambda value: value[11:16]
+    app.jinja_env.filters["dmhm"] = lambda value: f"{value[8:10]}.{value[5:7]}. {value[11:16]}"  # 15.09. 09:45
 
     @app.context_processor
     def inject_unread():

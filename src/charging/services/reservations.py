@@ -8,10 +8,13 @@ Operace a přechody stavů:
                                                   PENDING_APPROVAL -> CANCELLED
   OP-05 Approve / Reject     approve(), reject()  PENDING_APPROVAL -> CONFIRMED | REJECTED
   časové přechody            expire_overdue()     DRAFT | PENDING_APPROVAL -> EXPIRED (BR-05, BR-06)
+
+Události pro Notification Service se zapisují do tabulky outbox ve stejné transakci jako změna
+stavu (ADR-01). Doručuje je services/outbox.py – tato služba Notification Service vůbec nezná.
 """
 from __future__ import annotations
 
-import logging
+import json
 import re
 import sqlite3
 from contextlib import contextmanager
@@ -28,8 +31,6 @@ from ..timeutil import (
     parse_dt,
     parse_ts,
 )
-
-logger = logging.getLogger(__name__)
 
 # Technické limity vstupu z C01 – baseline je nedefinuje (viz evidence C02, zbývající předpoklad).
 MAX_SLOTS = 8  # max. 4 hodiny
@@ -158,9 +159,8 @@ def _atomic(conn: sqlite3.Connection):
 
 
 class ReservationService:
-    def __init__(self, conn: sqlite3.Connection, notifier=None, clock: Callable[[], datetime] = datetime.now):
+    def __init__(self, conn: sqlite3.Connection, clock: Callable[[], datetime] = datetime.now):
         self.conn = conn
-        self.notifier = notifier
         self.clock = clock
 
     def now(self) -> datetime:
@@ -409,7 +409,7 @@ class ReservationService:
             elif future is not None and future["state"] == CONFIRMED:
                 status, info = SLOT_RESERVED, f"dnes od {future['start_time'][11:]}"
             elif future is not None:
-                status, info = SLOT_PENDING, f"žádost na dnes od {future['start_time'][11:]}"
+                status, info = SLOT_PENDING, f"dnes od {future['start_time'][11:]}"
             else:
                 status, info = SLOT_FREE, ""
             result.append({**dict(st), "requires_approval": requires_approval(st), "status": status, "status_info": info})
@@ -509,24 +509,20 @@ class ReservationService:
             else:
                 raise InvalidStateError(f"Rezervace je v koncovém stavu {state} – zrušení není povoleno.")
             self._set_state(reservation_id, new_state, now)
-
-        if not is_owner:
-            self._notify("reservation_cancelled_by_admin", self.get_reservation(reservation_id))
-        self._release_slot(res, now)
+            if not is_owner:
+                self._emit("reservation_cancelled_by_admin", reservation=self.get_reservation(reservation_id))
+            self._emit_slot_released(res, now)
         return new_state
 
     def approve(self, admin_id: int, reservation_id: int) -> str:
         """OP-05 Approve: PENDING_APPROVAL -> CONFIRMED, jen admin a jen do T_start − 15 min (BR-06).
         Stanice je blokovaná už od PENDING_APPROVAL, schválení tedy alokaci jen potvrdí (BR-02)."""
         self._decide(admin_id, reservation_id, CONFIRMED)
-        self._notify("reservation_approved", self.get_reservation(reservation_id))
         return CONFIRMED
 
     def reject(self, admin_id: int, reservation_id: int) -> str:
         """OP-05 Reject: PENDING_APPROVAL -> REJECTED, slot se okamžitě uvolní."""
-        res, now = self._decide(admin_id, reservation_id, REJECTED)
-        self._notify("reservation_rejected", self.get_reservation(reservation_id))
-        self._release_slot(res, now)
+        self._decide(admin_id, reservation_id, REJECTED)
         return REJECTED
 
     def _decide(self, admin_id: int, reservation_id: int, new_state: str):
@@ -546,7 +542,12 @@ class ReservationService:
                     f"Rozhodnout lze pouze o žádosti ve stavu PENDING_APPROVAL (rezervace je {res['state']})."
                 )
             self._set_state(reservation_id, new_state, now)
-        return res, now
+            decided = self.get_reservation(reservation_id)
+            if new_state == CONFIRMED:
+                self._emit("reservation_approved", reservation=decided)
+            else:
+                self._emit("reservation_rejected", reservation=decided)
+                self._emit_slot_released(res, now)
 
     def _set_state(self, reservation_id: int, state: str, now: datetime) -> None:
         self.conn.execute(
@@ -554,24 +555,23 @@ class ReservationService:
             (state, format_ts(now), reservation_id),
         )
 
-    def _release_slot(self, res, now: datetime) -> None:
-        """REQ-06: zbývající část intervalu přestala být blokována -> událost do Notification Service."""
+    def _emit_slot_released(self, res, now: datetime) -> None:
+        """REQ-06: zbývající část intervalu přestala být blokována -> událost o uvolnění slotu."""
         released_start = max(parse_dt(res["start_time"]), ceil_to_slot(now))
         released_end = parse_dt(res["end_time"])
         if released_start < released_end:
-            self._notify(
+            self._emit(
                 "slot_released",
                 station_id=res["station_id"],
-                start=released_start,
-                end=released_end,
+                start=format_dt(released_start),
+                end=format_dt(released_end),
                 exclude_user_id=res["user_id"],
             )
 
-    def _notify(self, event: str, *args, **kwargs) -> None:
-        """Hranice systému: selhání notifikace nesmí zvrátit už provedenou operaci."""
-        if self.notifier is None:
-            return
-        try:
-            getattr(self.notifier, event)(*args, **kwargs)
-        except Exception:
-            logger.exception("Notification event %s failed", event)
+    def _emit(self, event: str, **payload) -> None:
+        """ADR-01: událost se zapíše do outboxu ve stejné transakci jako změna stavu, takže se
+        neztratí ani nevznikne pro operaci, která se vrátila (ROLLBACK). Doručí ji OutboxDispatcher."""
+        self.conn.execute(
+            "INSERT INTO outbox (event, payload, created_at) VALUES (?, ?, ?)",
+            (event, json.dumps(payload, ensure_ascii=False), format_ts(self.now())),
+        )

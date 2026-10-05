@@ -1,19 +1,21 @@
 {% extends "base.html" %}
 {% block title %}Notifikace{% endblock %}
 {% block content %}
-<h1>Notifikace</h1>
-{% if unread_notifications %}
-<form method="post" action="{{ url_for('main.notifications_mark_read') }}">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-  <button class="btn small ghost">Označit vše jako přečtené</button>
-</form>
-{% endif %}
+<div class="page-head">
+  <h1>Notifikace</h1>
+  {% if unread_notifications %}
+  <form method="post" action="{{ url_for('main.notifications_mark_read') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button class="btn small quiet">Označit vše jako přečtené</button>
+  </form>
+  {% endif %}
+</div>
 {% if not items %}
-  <p class="muted">Žádné notifikace.</p>
+  <p class="empty">Zatím žádné zprávy. Přijdou sem výsledky schvalování a upozornění na uvolněná stání.</p>
 {% else %}
-<ul class="notifications">
+<ul class="feed">
   {% for n in items %}
-    <li class="{{ 'unread' if not n.is_read }}"><small class="muted">{{ n.created_at }}</small><br>{{ n.message }}</li>
+    <li class="{{ 'unread' if not n.is_read }}"><time>{{ n.created_at|dmhm }}</time><p>{{ n.message }}</p></li>
   {% endfor %}
 </ul>
 {% endif %}

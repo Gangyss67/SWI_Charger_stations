@@ -1,6 +1,9 @@
 {% extends "base.html" %}
-{% block title %}{{ code }}{% endblock %}
+{% block title %}{{ title }}{% endblock %}
 {% block content %}
-<h1>{{ code }} · {{ title }}</h1>
-<p><a href="{{ url_for('main.index') }}">Zpět na přehled stanic</a></p>
+<section class="narrow">
+  <p class="eyebrow">Chyba {{ code }}</p>
+  <h1>{{ title }}</h1>
+  <p><a href="{{ url_for('main.index') }}">Zpět na parkoviště</a></p>
+</section>
 {% endblock %}

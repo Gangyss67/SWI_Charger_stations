@@ -9,6 +9,7 @@ from .auth import admin_required, login_required
 from .db import get_db
 from .services import notifications
 from .services.notifications import DatabaseChannel, NotificationService
+from .services.outbox import OutboxDispatcher
 from .services.reservations import (
     BOOKING_HORIZON_DAYS,
     CANCELLED,
@@ -35,13 +36,39 @@ from .timeutil import ceil_to_slot, time_options
 bp = Blueprint("main", __name__)
 
 ADMIN_TABS = (PENDING_APPROVAL, CONFIRMED, DRAFT, REJECTED, EXPIRED, CANCELLED, CANCELLED_BY_ADMIN, "ALL")
+TAB_LABELS = {
+    PENDING_APPROVAL: "Ke schválení",
+    CONFIRMED: "Potvrzené",
+    DRAFT: "Návrhy",
+    REJECTED: "Zamítnuté",
+    EXPIRED: "Propadlé",
+    CANCELLED: "Zrušené",
+    CANCELLED_BY_ADMIN: "Zrušené administrátorem",
+    "ALL": "Vše",
+}
+WEEKDAYS = ("pondělí", "úterý", "středa", "čtvrtek", "pátek", "sobota", "neděle")
+MONTHS = ("ledna", "února", "března", "dubna", "května", "června", "července", "srpna", "září", "října", "listopadu", "prosince")
 
 
 def _service() -> ReservationService:
-    conn = get_db()
-    clock = current_app.config["CLOCK"]
-    notifier = NotificationService(conn, DatabaseChannel(conn, clock))
-    return ReservationService(conn, notifier, clock)
+    return ReservationService(get_db(), current_app.config["CLOCK"])
+
+
+def _dispatcher() -> OutboxDispatcher:
+    conn, clock = get_db(), current_app.config["CLOCK"]
+    return OutboxDispatcher(conn, NotificationService(conn, DatabaseChannel(conn, clock)), clock)
+
+
+@bp.after_app_request
+def dispatch_outbox(response):
+    """ADR-01: po každém POST doručíme čekající události z outboxu. Nedoručené zůstanou
+    v outboxu a zkusí se znovu příště (nebo skriptem scripts/dispatch_notifications.py)."""
+    if request.method == "POST":
+        try:
+            _dispatcher().dispatch()
+        except Exception:
+            current_app.logger.exception("Outbox dispatch failed")
+    return response
 
 
 def _status(exc: ReservationError) -> int:
@@ -62,6 +89,12 @@ def _parse_day(value: str | None, minimum: date, maximum: date) -> date:
     return min(max(day, minimum), maximum)
 
 
+def _day_label(day: date, today: date) -> str:
+    prefix = {0: "Dnes, ", 1: "Zítra, "}.get((day - today).days, "")
+    weekday = WEEKDAYS[day.weekday()]
+    return f"{prefix}{weekday if prefix else weekday.capitalize()} {day.day}. {MONTHS[day.month - 1]}"
+
+
 def _default_vehicle() -> str:
     return g.user["vehicle_type"] if g.user else VEHICLE_BEV
 
@@ -75,7 +108,9 @@ def inject_pending_approvals():
 
 @bp.route("/")
 def index():
-    """Přehled stanic + OP-01: vyhledání volných stanic pro interval a typ vozu."""
+    """Parkoviště + tok z aktivitního diagramu OP-01/OP-02: uživatel zadá interval, typ vozu a SPZ,
+    systém zobrazí seznam volných stanic (PHEV bez HPC), uživatel vybere stanici a vytvoří návrh.
+    Dostupnost (OP-01) se počítá jen z intervalu a typu vozu, SPZ se použije až v OP-02."""
     svc = _service()
     now = svc.now()
     suggested = ceil_to_slot(now + timedelta(minutes=30))
@@ -86,18 +121,23 @@ def index():
         "vehicle_type": request.args.get("vehicle_type") or _default_vehicle(),
         "license_plate": request.args.get("license_plate", ""),
     }
-    results = None
+    free_stations, excluded = None, []
     if "time" in request.args:
         try:
             start = parse_slot_start(form["date"], form["time"])
             results = svc.search_availability(start, form["slots"], form["vehicle_type"])
         except ReservationError as exc:
             flash(str(exc), "error")
+        else:
+            free_stations = [r for r in results if r["available"]]
+            excluded = [r["name"] for r in results if r["reason"] == "VEHICLE"]
     return render_template(
         "index.html",
         stations=svc.stations_overview(),
+        now=now,
         form=form,
-        results=results,
+        free_stations=free_stations,
+        excluded=excluded,
         time_options=time_options(),
         max_slots=MAX_SLOTS,
         vehicle_types=VEHICLE_TYPES,
@@ -128,6 +168,7 @@ def station_detail(station_id: int):
         station=station,
         needs_approval=requires_approval(station),
         day=day,
+        day_label=_day_label(day, today),
         today=today,
         last_day=last_day,
         prev_day=day - timedelta(days=1) if day > today else None,
@@ -145,19 +186,19 @@ def station_detail(station_id: int):
 
 def _confirm_message(svc: ReservationService, reservation_id: int, state: str) -> str:
     if state == PENDING_APPROVAL:
-        res = svc.get_reservation(reservation_id)
+        deadline = svc.get_reservation(reservation_id)["approval_deadline"]
         return (
-            f"Rezervace #{reservation_id} čeká na schválení administrátorem (PENDING_APPROVAL) – termín je pro vás "
-            f"blokován. Administrátor musí rozhodnout do {res['approval_deadline'][:16]}."
+            f"Rezervace #{reservation_id} čeká na schválení administrátorem. Termín je pro vás zablokovaný "
+            f"a administrátor rozhodne nejpozději {deadline[8:10]}.{deadline[5:7]}. v {deadline[11:16]}."
         )
-    return f"Rezervace #{reservation_id} je potvrzena (CONFIRMED)."
+    return f"Rezervace #{reservation_id} je potvrzená."
 
 
 @bp.post("/reservations")
 @login_required
 def create_reservation():
-    """OP-02 Create. JSON {station_id, date, time, slots, vehicle_type, license_plate} -> 201 + rezervace.
-    Formulář s action=confirm navíc rovnou provede OP-03."""
+    """OP-02 Create -> DRAFT. JSON {station_id, date, time, slots, vehicle_type, license_plate} -> 201 + rezervace.
+    Potvrzení (OP-03) je samostatná akce uživatele."""
     svc = _service()
     if request.is_json:
         data = request.get_json(silent=True)
@@ -201,19 +242,11 @@ def create_reservation():
         flash(str(exc), "error")
         return redirect(url_for("main.station_detail", station_id=station_id, **fields))
 
-    if request.form.get("action") == "confirm":
-        try:
-            state = svc.confirm(g.user["id"], reservation_id)
-        except ReservationError as exc:
-            flash(f"Návrh #{reservation_id} je uložen (DRAFT), ale potvrzení bylo odmítnuto: {exc}", "error")
-        else:
-            flash(_confirm_message(svc, reservation_id, state), "success")
-    else:
-        expires = svc.get_reservation(reservation_id)["draft_expires_at"][11:]
-        flash(
-            f"Návrh #{reservation_id} vytvořen (DRAFT). Potvrďte ho do {expires}, jinak propadne (BR-05).",
-            "success",
-        )
+    expires = svc.get_reservation(reservation_id)["draft_expires_at"][11:]
+    flash(
+        f"Návrh rezervace #{reservation_id} je vytvořený a platí do {expires}. Potvrďte ho, jinak propadne.",
+        "success",
+    )
     return redirect(url_for("main.my_reservations"))
 
 
@@ -254,23 +287,21 @@ def confirm_reservation(reservation_id: int):
 @bp.post("/reservations/<int:reservation_id>/cancel")
 @login_required
 def cancel_reservation(reservation_id: int):
-    return _run_action("cancel", reservation_id, lambda svc, state: f"Rezervace #{reservation_id} zrušena ({state}).")
+    return _run_action("cancel", reservation_id, lambda svc, state: f"Rezervace #{reservation_id} je zrušená.")
 
 
 @bp.post("/reservations/<int:reservation_id>/approve")
 @login_required
 def approve_reservation(reservation_id: int):
     # roli Admin ověřuje služba (OP-05), ne-admin dostane 403
-    return _run_action(
-        "approve", reservation_id, lambda svc, state: f"Žádost #{reservation_id} schválena – rezervace je CONFIRMED."
-    )
+    return _run_action("approve", reservation_id, lambda svc, state: f"Rezervace #{reservation_id} je schválená.")
 
 
 @bp.post("/reservations/<int:reservation_id>/reject")
 @login_required
 def reject_reservation(reservation_id: int):
     return _run_action(
-        "reject", reservation_id, lambda svc, state: f"Žádost #{reservation_id} zamítnuta (REJECTED), slot je volný."
+        "reject", reservation_id, lambda svc, state: f"Rezervace #{reservation_id} je zamítnutá a termín je znovu volný."
     )
 
 
@@ -284,7 +315,7 @@ def admin_reservations():
         "admin_reservations.html",
         reservations=_service().list_all(None if state == "ALL" else state),
         state=state,
-        states=ADMIN_TABS,
+        tabs=[(tab, TAB_LABELS[tab]) for tab in ADMIN_TABS],
     )
 
 
@@ -357,4 +388,3 @@ def api_reservation(reservation_id: int):
     if res["user_id"] != g.user["id"] and not g.user["is_admin"]:
         return jsonify({"error": "Rezervace patří jinému uživateli."}), 403
     return jsonify(res)
-

@@ -10,7 +10,7 @@ from flask import current_app, g
 from werkzeug.security import generate_password_hash
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
-SCHEMA_VERSION = 2  # PRAGMA user_version nastavuje schema.sql; 0/1 = C01 (stavy DRAFT/PENDING/...)
+SCHEMA_VERSION = 5  # PRAGMA user_version nastavuje schema.sql; 0/1 = C01, 2–4 = v0.2.x, 5 = outbox (C03)
 
 # 10 nabíječek, z toho 3 vysokorychlostní (jen pro BEV). DC 07 a HPC 08–10 (>= 50 kW)
 # vyžadují schválení administrátorem (BR-06).

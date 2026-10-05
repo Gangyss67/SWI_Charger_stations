@@ -48,6 +48,7 @@ Typ vozidla u účtu je jen výchozí hodnota – typ vozu a SPZ se zadávají u
 ```powershell
 .\.venv\Scripts\python.exe -m pytest
 .\.venv\Scripts\python.exe scripts\verify_c02.py     # příklady ověření baseline v0.2 přes HTTP (exit 0 = OK)
+.\.venv\Scripts\python.exe scripts\dispatch_notifications.py   # doručí nedoručené notifikace z outboxu
 ```
 
 ## Doména v kostce (baseline v0.2)
@@ -62,15 +63,15 @@ Typ vozidla u účtu je jen výchozí hodnota – typ vozu a SPZ se zadávají u
 - **BR-03:** uživatel ruší `CONFIRMED` nejpozději 30 min před začátkem, admin kdykoliv před koncem; žádost `PENDING_APPROVAL` lze stáhnout kdykoliv.
 - **BR-04 (domain rule):** HPC nabíječky smí rezervovat pouze BEV, ne plug-in hybrid – služba i DB trigger.
 - **BR-05 / BR-06:** `DRAFT` propadá po 5 min; o žádosti DC/HPC (≥ 50 kW) musí admin rozhodnout do `T_start − 15 min`, jinak `EXPIRED`.
-- **Boundary:** Notification Service – výsledek schválení/zamítnutí, zrušení administrátorem, uvolněný (výkonnější) slot.
+- **Boundary:** Notification Service – výsledek schválení/zamítnutí, zrušení administrátorem, uvolněný (výkonnější) slot. Od C03 jdou události přes outbox (ADR-01): doručují se po každém POST, nedoručené zkusí znovu `scripts/dispatch_notifications.py`.
 
 ## HTTP rozhraní
 
 | Metoda | URL | Operace |
 | --- | --- | --- |
-| GET | `/?date=&time=&slots=&vehicle_type=` | přehled stanic + OP-01 vyhledání volných stanic |
+| GET | `/?date=&time=&slots=&vehicle_type=&license_plate=` | přehled stanic + „Nová rezervace“ podle aktivitního diagramu OP-01/02: krok 1 interval, typ vozu, SPZ → krok 2 seznam volných stanic (OP-01) → „Vytvořit návrh“ (OP-02) |
 | GET | `/stations/<id>?date=YYYY-MM-DD` | dostupnost po slotech + formulář rezervace |
-| POST | `/reservations` | OP-02 create (formulář nebo JSON); formulář s `action=confirm` provede i OP-03 |
+| POST | `/reservations` | OP-02 create → DRAFT (formulář nebo JSON); potvrzení je samostatná akce OP-03 |
 | POST | `/reservations/<id>/confirm` | OP-03 DRAFT → CONFIRMED (AC) / PENDING_APPROVAL (DC/HPC) |
 | POST | `/reservations/<id>/cancel` | OP-04 → CANCELLED / CANCELLED_BY_ADMIN |
 | POST | `/reservations/<id>/approve` | OP-05 PENDING_APPROVAL → CONFIRMED (admin) |
@@ -123,8 +124,10 @@ src/charging/
   views.py                      stránky + JSON API
   services/reservations.py      doménová logika (stavy, pravidla, dostupnost)
   services/notifications.py     Notification Service (boundary)
+  services/outbox.py            doručování událostí z outboxu (ADR-01)
   templates/, static/
 scripts/spike_persistence.py    C01 spike A – persistence
 scripts/verify_c02.py           C02 – příklady ověření baseline v0.2 přes HTTP
-tests/                          pytest testy
+scripts/dispatch_notifications.py  C03 – opakované doručení notifikací z outboxu
+tests/                          pytest testy (test_architecture.py = pravidlo z ADR-01)
 ```
