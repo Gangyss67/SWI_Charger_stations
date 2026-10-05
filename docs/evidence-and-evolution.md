@@ -91,3 +91,61 @@ Architektonické drivery přenesené do C03:
 
 Commit / tag aplikace:
 - větev `c02-baseline-v0.2`, commit `578c0a6`, tag `v0.2.3` (stejná logika jako `v0.2.1`, nové UI; `v0.2.2` byl zamítnutý pokus s připouštěním podle výkonu vozidla, není součástí baseline)
+
+## C03 — Architecture Evidence
+
+Baseline: v0.2 (cv2.docx, aplikace `v0.2.3`)
+
+Part A:
+Část A jsme dělali v rámci tohoto C03. Krátké AS-IS shrnutí je v `docs/architecture-and-decisions.md` (C03 – Výchozí stav): stav mění jen `ReservationService`, BR-02 hlídá služba i trigger v `BEGIN IMMEDIATE` transakci a notifikace se volaly synchronně po COMMIT, při chybě se ztratily.
+
+Drivers:
+DR-1 souběh a BR-02, DR-2 schválení přijde později, DR-3 selhání Notification Service, DR-4 schvaluje jen admin (tabulka B).
+
+Decision question:
+Kde má být izolovaná integrace s Notification Service a co znamená její selhání pro Approve / Reject a Cancel?
+
+Alternatives:
+A – synchronní volání Notification Integration po COMMIT s pár pokusy v requestu. B – transakční outbox: událost se uloží ve stejné transakci jako změna stavu, doručuje ji `OutboxDispatcher` s opakováním.
+
+Scenario walkthrough:
+Confirm DC/HPC → PENDING_APPROVAL → admin schválí, Notification Service je nedostupná. V A se zpráva po pokusech ztratí, v B čeká v outboxu a doručí se později. V obou zůstane rezervace CONFIRMED. Při souběhu dvou schválení projde jedno a druhé dostane 409; v B zapíše událost jen úspěšná transakce (tabulka E3).
+
+ADR:
+ADR-01 – zvolena B (outbox). Negativa: zpoždění zprávy, doručení „aspoň jednou“, delší POST kvůli dispatchi v `after_request`, nová tabulka a skript.
+
+Views:
+- domain class – `docs/diagrams/c03_domain.png` (C1)
+- context – G1 (ASCII v architecture-and-decisions.md)
+- static architecture – `docs/diagrams/c03_static.png` (G2)
+- state ownership – tabulka G3
+- runtime/deployment – G4 (ASCII)
+- design sequence – `docs/diagrams/c03_sequence.png` (H1, alt: selhání Notification Service)
+- focused design class – `docs/diagrams/c03_design_class.png` (H2)
+
+Cross-view issues found/resolved:
+- Rezervace v kódu není třída (řádek tabulky) → v H2 označená jako «entity / tabulka».
+- Skript pro doručení otevíral DB napřímo a na staré DB bez tabulky `outbox` by spadl → používá `create_app()`.
+- `after_request` běží před odesláním odpovědi, takže doručení prodlouží POST → dopsáno do negativ ADR-01.
+- Přechod do EXPIRED spouští každý request (líně), DR-2 tím není vyřešený celý → necháno jako riziko.
+
+AS-IS → TO-BE delta:
+CHANGE: volání Notification Service přes outbox, opakování při selhání, doručuje `OutboxDispatcher`, tabulka `outbox`, odstraněná závislost `ReservationService` → Notification Service. KEEP: změna stavu jen v `ReservationService`, BR-02 (`BEGIN IMMEDIATE` + trigger), kontrola role admina. VERIFY: pravidlo „RM nezná Notification Service“ → ověřeno testem (tabulka J).
+
+Implementation changes:
+`services/reservations.py` (`_emit()` místo `_notify()`, konstruktor bez `notifier`), nový `services/outbox.py`, `views.py` (dispatch po POST), `schema.sql` (tabulka `outbox`, verze 5), `scripts/dispatch_notifications.py`, testy `tests/test_reservations.py` a `tests/test_architecture.py`.
+
+Behaviour verification:
+`pytest` 77 passed (z toho nové: událost se zapíše v transakci a doručí později, vrácená operace nezapíše nic, při selhání událost čeká a další pokus ji doručí právě jednou). `scripts/verify_c02.py` 14/14 OK včetně notifikací po schválení a zamítnutí (V4b, V5c). Souběh: z 10 souběžných potvrzení projde jedno.
+
+Architecture conformance rule + result:
+Pravidlo: `services/reservations.py` nezná Notification Service, `NotificationService` volá jen `OutboxDispatcher`. Kontrola: `tests/test_architecture.py` (ast). Výsledek: 2 passed. Ověřeno i naopak: s dočasně přidaným `from .notifications import NotificationService` do `services/reservations.py` test spadl.
+
+Remaining uncertainty / risk:
+- Bez provozu se zprávy doručí až při spuštění `scripts/dispatch_notifications.py`. Cron jsme zatím nenastavili.
+- Propadnutí (DR-2) je pořád „líné“ a k propadlé žádosti se neposílá zpráva.
+- SQLite pouští jeden zápis najednou. Při 10× souběhu (future pressure Q) to může být úzké místo, zátěž jsme neměřili.
+- U skutečného externího providera může zpráva přijít dvakrát (doručení aspoň jednou).
+
+Commit/tag:
+- větev `c02-baseline-v0.2`, commit `9f9a70c`, tag `v0.3.0`
