@@ -3,7 +3,7 @@
   --brand: #0f7b5f; --brand-dark: #0b5e49; --danger: #c0392b; --warn: #b36b00;
   --free: #e3f6ec; --free-text: #0f7b5f; --reserved: #fde8d4; --reserved-text: #9a4d00;
   --inuse: #fbd9d6; --inuse-text: #a42a1e; --past: #eceff2; --past-text: #8a95a1;
-  --hpc: #5b3fd1;
+  --hpc: #5b3fd1; --pending: #fff3c4; --pending-text: #7a5a00;
 }
 * { box-sizing: border-box; }
 body { margin: 0; font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); }
@@ -55,10 +55,14 @@ button.link { background: none; border: 0; font: inherit; cursor: pointer; paddi
 .slot-reserved { background: var(--reserved); color: var(--reserved-text); }
 .slot-in_use { background: var(--inuse); color: var(--inuse-text); }
 .slot-past { background: var(--past); color: var(--past-text); }
+.slot-pending { background: var(--pending); color: var(--pending-text); }
 .state-draft { background: var(--past); color: #4b5763; }
-.state-pending { background: #fff3c4; color: #7a5a00; }
+.state-pending_approval { background: var(--pending); color: var(--pending-text); }
 .state-confirmed { background: var(--free); color: var(--free-text); }
-.state-cancelled { background: var(--inuse); color: var(--inuse-text); }
+.state-cancelled, .state-cancelled_by_admin { background: var(--inuse); color: var(--inuse-text); }
+.state-rejected { background: #f3d6ea; color: #8a1f63; }
+.state-expired { background: var(--past); color: var(--past-text); }
+.approval-badge { background: var(--pending); color: var(--pending-text); font-size: .72rem; vertical-align: middle; }
 
 .day-nav { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
 .legend { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 12px; }
@@ -69,7 +73,6 @@ a.slot:hover { border-color: var(--brand); }
 .slot.mine { border-color: var(--reserved-text); }
 .slot-time { font-weight: 700; }
 .slot-label { font-size: .75rem; }
-.pending { position: absolute; top: 4px; right: 6px; background: #fff3c4; color: #7a5a00; border-radius: 999px; font-size: .7rem; padding: 0 6px; }
 
 .form-card { margin-top: 12px; }
 .form-card.narrow { max-width: 420px; margin: 24px auto; }
@@ -95,3 +98,9 @@ td.actions form + form { margin-left: 6px; }
 .notifications { list-style: none; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .notifications li { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; }
 .notifications li.unread { border-left: 4px solid var(--brand); }
+
+.section-title { margin-top: 28px; }
+.results { margin-top: 14px; }
+.ok-text { color: var(--free-text); }
+.off-text { color: var(--inuse-text); }
+tr.row-off td { color: var(--muted); }

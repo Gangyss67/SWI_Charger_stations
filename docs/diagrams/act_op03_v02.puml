@@ -1,0 +1,41 @@
+@startuml
+skinparam defaultFontName Arial
+title OP-03 Confirm Reservation (v0.2)
+start
+:Uživatel odešle požadavek na potvrzení rezervace X;
+if (Uplynulo od vytvoření více než 5 minut? (BR-05)) then (ano)
+  :Nastavit stav EXPIRED;
+  :Zamítnout potvrzení (propadlý návrh);
+  stop
+else (ne)
+endif
+#FFF3C4:if (Výkon stanice ≥ 50 kW – DC/HPC? (BR-06)) then (ano)
+  #FFF3C4:if (T_nyní ≤ T_start − 15 min?) then (ne)
+    #FFF3C4:Zamítnout potvrzení – na schválení nezbývá čas
+    (rezervace zůstává DRAFT);
+    stop
+  else (ano)
+  endif
+else (ne – AC)
+endif
+:Zahájit atomickou transakci;
+#FFF3C4:if (Překryv s CONFIRMED nebo PENDING_APPROVAL? (BR-02)) then (ano)
+  :Rollback transakce;
+  :Zamítnout potvrzení (rezervace zůstává DRAFT);
+  stop
+else (ne)
+endif
+#FFF3C4:if (DC/HPC stanice?) then (ano)
+  #FFF3C4:Změnit stav na PENDING_APPROVAL;
+  #FFF3C4:Nastavit termín rozhodnutí T_start − 15 min
+  (žádost se objeví ve frontě administrátora);
+else (ne – AC)
+  :Změnit stav na CONFIRMED;
+endif
+:Commit transakce;
+:Vrátit výsledek potvrzení uživateli;
+stop
+legend right
+  <back:#FFF3C4>   </back> změna v0.2
+endlegend
+@enduml

@@ -2,30 +2,38 @@
 {% from "_macros.html" import state_badge, action_button %}
 {% block title %}Schvalování{% endblock %}
 {% block content %}
-<h1>Správa rezervací</h1>
+<h1>Schvalování a správa rezervací</h1>
 <div class="tabs">
   {% for s in states %}
     <a class="tab{% if s == state %} active{% endif %}" href="{{ url_for('main.admin_reservations', state=s) }}">{{ 'Vše' if s == 'ALL' else s }}</a>
   {% endfor %}
 </div>
+{% if state == 'PENDING_APPROVAL' %}
+  <p class="muted">Žádosti na DC/HPC stanice. O každé je nutné rozhodnout nejpozději 15 minut před začátkem, jinak propadne (EXPIRED) a termín se uvolní.</p>
+{% endif %}
 {% if not reservations %}
   <p class="muted">Žádné rezervace v tomto stavu.</p>
 {% else %}
 <div class="table-wrap">
 <table>
-  <thead><tr><th>#</th><th>Uživatel</th><th>Stanice</th><th>Termín</th><th>Stav</th><th></th></tr></thead>
+  <thead><tr><th>#</th><th>Uživatel</th><th>Stanice</th><th>Termín</th><th>Vůz</th><th>Stav</th><th></th></tr></thead>
   <tbody>
   {% for r in reservations %}
     <tr>
       <td>{{ r.id }}</td>
-      <td>{{ r.username }} <small class="muted">{{ r.vehicle_type }}</small></td>
+      <td>{{ r.username }}</td>
       <td>{{ r.station_name }} <small class="muted">{{ r.power_kw }} kW</small></td>
       <td>{{ r.start_time|timerange(r.end_time) }}</td>
+      <td>{{ r.vehicle_type }} <small class="muted">{{ r.license_plate }}</small></td>
       <td>{{ state_badge(r.state) }} {% if r.usage %}<small class="muted">{{ r.usage }}</small>{% endif %}
-        {% if r.state == 'PENDING' and r.has_conflict %}<br><small class="warn">Koliduje s potvrzenou rezervací – nelze potvrdit</small>{% endif %}</td>
+        {% if r.state == 'PENDING_APPROVAL' %}<br><small class="warn">Rozhodnout do {{ r.approval_deadline[:16] }}</small>{% endif %}</td>
       <td class="actions">
-        {% if r.can_approve %}{{ action_button('main.approve_reservation', r.id, 'Potvrdit', 'ok', 'admin') }}{% endif %}
-        {% if r.can_cancel %}{{ action_button('main.cancel_reservation', r.id, 'Zrušit', 'danger', 'admin') }}{% endif %}
+        {% if r.can_decide %}
+          {{ action_button('main.approve_reservation', r.id, 'Schválit', 'ok', 'admin') }}
+          {{ action_button('main.reject_reservation', r.id, 'Zamítnout', 'danger', 'admin') }}
+        {% elif r.admin_can_cancel %}
+          {{ action_button('main.cancel_reservation', r.id, 'Zrušit', 'danger', 'admin') }}
+        {% endif %}
       </td>
     </tr>
   {% endfor %}
