@@ -1,7 +1,7 @@
 # SWI_Charger_stations
 Toto je naše testovací repo do předmětu SWI. Výsledkem je funkční rezervační systém na fiktivní nabíjecí stanice.
 
-Webová aplikace pro rezervaci 10 nabíjecích stanic (z toho 3 vysokorychlostní jen pro plně elektrické vozy) po 30minutových slotech, s přihlašováním uživatelů, katalogem vozidel, připouštěním vozidel na rychlé stanice podle jejich nabíjecího výkonu, schvalováním výjimek a in-app notifikacemi. Aplikace odpovídá **specifikaci baseline v0.2** (cv2, změna C02).
+Webová aplikace pro rezervaci 10 nabíjecích stanic (z toho 3 vysokorychlostní jen pro plně elektrické vozy) po 30minutových slotech, s přihlašováním uživatelů, schvalováním rezervací rychlých stanic a in-app notifikacemi. Aplikace odpovídá **specifikaci baseline v0.2** (cv2, změna C02).
 
 ## Stack
 
@@ -31,18 +31,17 @@ python3 -m venv .venv
 ```
 
 Aplikace běží na <http://127.0.0.1:5000>. Databáze se vytvoří automaticky při prvním startu (schéma + 10 stanic + demo účty).
-Reset databáze = smazat soubor `instance/charging.db`. Databázi se starším schématem aplikace při startu sama přesune do zálohy (např. `instance/charging.db.v2.bak`) a založí novou.
+Reset databáze = smazat soubor `instance/charging.db`. Databázi se starším schématem (C01) aplikace při startu sama přesune do zálohy `instance/charging.db.v0.bak` a založí novou.
 
 ### Demo účty
 
 | Uživatel | Heslo | Vozidlo | Role |
 | --- | --- | --- | --- |
-| `admin` | `admin1234` | Tesla Model 3, 250 kW | administrátor (rozhoduje o výjimkách) |
-| `ridic_ev` | `ev123456` | Škoda Enyaq 85, 135 kW | uživatel – na HPC automaticky |
-| `ridic_mesto` | `mesto1234` | VW e-up!, 40 kW | uživatel – na DC 07 automaticky, na HPC jen s výjimkou |
-| `ridic_phev` | `phev1234` | Mitsubishi Outlander PHEV, 22 kW DC | uživatel – HPC ne, DC 07 jen s výjimkou |
+| `admin` | `admin1234` | BEV | administrátor (schvaluje žádosti DC/HPC) |
+| `ridic_ev` | `ev123456` | BEV | uživatel |
+| `ridic_phev` | `phev1234` | PHEV | uživatel (nesmí na HPC nabíječky) |
 
-Vozidlo u účtu je jen výchozí hodnota; vozidlo z katalogu a SPZ se vybírají u každé rezervace. Další účty lze vytvořit přes Registraci.
+Typ vozidla u účtu je jen výchozí hodnota – typ vozu a SPZ se zadávají u každé rezervace. Další účty lze vytvořit přes Registraci.
 
 ## Testy
 
@@ -54,32 +53,30 @@ Vozidlo u účtu je jen výchozí hodnota; vozidlo z katalogu a SPZ se vybíraj�
 ## Doména v kostce (baseline v0.2)
 
 - **Resource:** nabíjecí stanice `AC 01–03` 11 kW, `AC 04–06` 22 kW, `DC 07` 50 kW, `HPC 08–10` 150 kW.
-- **Reservation:** stanice + interval `[start, end)` po 30min slotech (1–8 slotů, max. 14 dní dopředu) + vozidlo z katalogu (pohon BEV/PHEV, max. DC nabíjecí výkon) + SPZ + stav.
+- **Reservation:** stanice + interval `[start, end)` po 30min slotech (1–8 slotů, max. 14 dní dopředu) + typ vozu + SPZ + stav.
 - **Operace:** OP-01 Check Availability, OP-02 Create, OP-03 Confirm, OP-04 Cancel, OP-05 Approve / Reject (admin).
-- **Stavy:** `DRAFT` (návrh, 5 min, neblokuje) → `CONFIRMED` (AC nebo dost výkonné vozidlo) nebo `PENDING_APPROVAL` (žádost o výjimku, blokuje, čeká na admina)
+- **Stavy:** `DRAFT` (návrh, 5 min, neblokuje) → `CONFIRMED` (AC) nebo `PENDING_APPROVAL` (DC/HPC, blokuje, čeká na admina)
   → `CONFIRMED` / `REJECTED`; koncové `CANCELLED`, `CANCELLED_BY_ADMIN`, `REJECTED`, `EXPIRED`.
   Diagramy: [docs/diagrams/](docs/diagrams/).
 - **BR-02 (common rule):** dvě rezervace v blokujícím stavu (`CONFIRMED`, `PENDING_APPROVAL`) stejné stanice se nesmí překrývat – služba i DB trigger.
 - **BR-03:** uživatel ruší `CONFIRMED` nejpozději 30 min před začátkem, admin kdykoliv před koncem; žádost `PENDING_APPROVAL` lze stáhnout kdykoliv.
 - **BR-04 (domain rule):** HPC nabíječky smí rezervovat pouze BEV, ne plug-in hybrid – služba i DB trigger.
-- **BR-05:** `DRAFT` propadá po 5 min.
-- **BR-06:** na rychlou stanici (DC 07 50 kW, HPC 150 kW) se automaticky připustí vozidlo, které nabíjí aspoň polovinou jejího výkonu (DC od 25 kW, HPC od 75 kW). Slabší vozidlo jen jako výjimku, o které rozhodne admin do `T_start − 15 min`, jinak `EXPIRED`. Vozidlo bez DC nabíjení na rychlou stanici nesmí.
+- **BR-05 / BR-06:** `DRAFT` propadá po 5 min; o žádosti DC/HPC (≥ 50 kW) musí admin rozhodnout do `T_start − 15 min`, jinak `EXPIRED`.
 - **Boundary:** Notification Service – výsledek schválení/zamítnutí, zrušení administrátorem, uvolněný (výkonnější) slot.
 
 ## HTTP rozhraní
 
 | Metoda | URL | Operace |
 | --- | --- | --- |
-| GET | `/?date=&time=&slots=&vehicle_model_id=&license_plate=` | parkoviště + „Nová rezervace“ podle aktivitního diagramu OP-01/02: krok 1 interval, vozidlo, SPZ → krok 2 volná stání pro vozidlo (OP-01) → „Vytvořit návrh“ (OP-02) |
+| GET | `/?date=&time=&slots=&vehicle_type=&license_plate=` | přehled stanic + „Nová rezervace“ podle aktivitního diagramu OP-01/02: krok 1 interval, typ vozu, SPZ → krok 2 seznam volných stanic (OP-01) → „Vytvořit návrh“ (OP-02) |
 | GET | `/stations/<id>?date=YYYY-MM-DD` | dostupnost po slotech + formulář rezervace |
 | POST | `/reservations` | OP-02 create → DRAFT (formulář nebo JSON); potvrzení je samostatná akce OP-03 |
-| POST | `/reservations/<id>/confirm` | OP-03 DRAFT → CONFIRMED / PENDING_APPROVAL (výjimka) |
+| POST | `/reservations/<id>/confirm` | OP-03 DRAFT → CONFIRMED (AC) / PENDING_APPROVAL (DC/HPC) |
 | POST | `/reservations/<id>/cancel` | OP-04 → CANCELLED / CANCELLED_BY_ADMIN |
 | POST | `/reservations/<id>/approve` | OP-05 PENDING_APPROVAL → CONFIRMED (admin) |
 | POST | `/reservations/<id>/reject` | OP-05 PENDING_APPROVAL → REJECTED (admin) |
 | GET | `/admin/reservations?state=` | fronta schvalování a správa rezervací (admin) |
-| GET | `/api/availability?date=&time=&slots=&vehicle_model_id=[&station_id=]` | OP-01 (JSON): dostupnost a způsob připuštění (`AUTO` / `EXCEPTION`) |
-| GET | `/api/vehicle-models` | katalog vozidel s max. DC výkonem |
+| GET | `/api/availability?date=&time=&slots=&vehicle_type=[&station_id=]` | OP-01 (JSON) |
 | GET | `/api/stations/<id>/availability?date=` | sloty jedné stanice (JSON) |
 | GET | `/api/reservations/<id>` | detail rezervace (vlastník nebo admin) |
 
@@ -92,12 +89,11 @@ Jedna end-to-end cesta, která je runnable (a implementovaná a testovaná):
 
 ```
 POST /reservations   (JSON: {"station_id": 8, "date": "2026-09-15", "time": "10:00", "slots": 2,
-                             "vehicle_model_id": 1, "license_plate": "1AB 2345"})
+                             "vehicle_type": "BEV", "license_plate": "1AB 2345"})
 → validate   přihlášený uživatel, CSRF, typy vstupu, SPZ, 30min slot, 1–8 slotů, začátek v budoucnu,
-             horizont 14 dní, stanice a vozidlo existují, HPC jen BEV, rychlá stanice jen s DC
-             (kolize se ověřují až při potvrzení – OP-03)
+             horizont 14 dní, stanice existuje, HPC jen BEV (kolize se ověřují až při potvrzení – OP-03)
 → persist    INSERT do SQLite tabulky reservations ve stavu DRAFT s expirací +5 min (BEGIN IMMEDIATE)
-→ return     201 Created + JSON rezervace včetně "id"  (400 validace / 401 nepřihlášen / 404 stanice, vozidlo)
+→ return     201 Created + JSON rezervace včetně "id"  (400 validace / 401 nepřihlášen / 404 stanice)
 → automated check
              tests/test_web.py::test_cp1_walking_skeleton_post_reservation_returns_id_and_persists
              tests/test_web.py::test_cp1_validation_errors

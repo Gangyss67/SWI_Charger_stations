@@ -36,65 +36,57 @@ Decision / what changes because of the result:
 ## Evidence C02: specifikace → běžící aplikace
 
 Přijatá baseline:
-- Specification Baseline v0.2 (cv2.docx, bod 13) = v0.1 (OP-01–OP-04, BR-01–BR-05) + změna C02: rychlé stanice (DC 07 50 kW, HPC 08–10 150 kW) automaticky připustí vozidlo, které nabíjí aspoň polovinou jejich výkonu. Slabší vozidlo je dostane jen jako výjimku, kterou schválí administrátor. Vozidlo se vybírá z katalogu modelů se známým max. DC nabíjecím výkonem. Nová operace OP-05 Approve / Reject, nové BR-06, upravené BR-02 (blokující stavy CONFIRMED + PENDING_APPROVAL) a BR-03 (stažení žádosti), nové stavy PENDING_APPROVAL a REJECTED.
+- Specification Baseline v0.2 (cv2.docx, bod 13) = v0.1 (OP-01–OP-04, BR-01–BR-05) + změna C02: rezervace rychlých stanic (DC ≥ 50 kW, HPC) schvaluje administrátor. Nová operace OP-05 Approve / Reject, nové BR-06 Approval policy, upravené BR-02 (blokující stavy CONFIRMED + PENDING_APPROVAL) a BR-03 (stažení žádosti), nové stavy PENDING_APPROVAL a REJECTED.
 
 Předvedené základní operace (běžící server `python run.py`, HTTP + UI):
-- OP-01 Check Availability – formulář „Nová rezervace“ na `/` podle aktivitního diagramu OP-01/02 (krok 1: termín, vozidlo z katalogu, SPZ; krok 2: volná stání, která vozidlo připustí, u rychlých stání „automaticky“ nebo „jen s výjimkou“), `GET /api/availability?…&vehicle_model_id=` (AVAILABLE/UNAVAILABLE, důvod `COLLISION` / `PENDING_APPROVAL` / `VEHICLE` / `NO_DC`, připuštění `AUTO` / `EXCEPTION`), časová osa dne na `/stations/<id>`.
-- OP-02 Create – `POST /reservations` → `201`, DRAFT s vozidlem, SPZ a `draft_expires_at` (+5 min); vrací ID a čas expirace.
-- OP-03 Confirm – `POST /reservations/<id>/confirm`: AC stanice nebo dost výkonné vozidlo → CONFIRMED, slabší vozidlo na DC/HPC → PENDING_APPROVAL s `approval_deadline` (T_start − 15 min).
+- OP-01 Check Availability – formulář „Nová rezervace“ na `/` přesně podle aktivitního diagramu OP-01/02 (krok 1: interval, typ vozu a SPZ; krok 2: seznam volných stanic, PHEV bez HPC; „Vytvořit návrh“ = OP-02), `GET /api/availability` (10 stanic, AVAILABLE/UNAVAILABLE + důvod `COLLISION` / `PENDING_APPROVAL` / `VEHICLE`, příznak „vyžaduje schválení“), sloty stanice `/stations/<id>`.
+- OP-02 Create – `POST /reservations` → `201`, DRAFT s typem vozu, SPZ a `draft_expires_at` (+5 min); vrací ID a čas expirace.
+- OP-03 Confirm – `POST /reservations/<id>/confirm`: AC → CONFIRMED, DC/HPC → PENDING_APPROVAL s `approval_deadline` (T_start − 15 min).
 - OP-04 Cancel – `POST /reservations/<id>/cancel`: CONFIRMED → CANCELLED / CANCELLED_BY_ADMIN, PENDING_APPROVAL → CANCELLED.
-- OP-05 Approve / Reject – záložka Schvalování `/admin/reservations` (fronta výjimek podle termínu rozhodnutí, u každé vozidlo a jeho výkon proti požadavku stanice), `POST /reservations/<id>/approve|reject`.
-- Běh serveru s finálním kódem (5. 10. 2026, samostatná DB): `GET /`, `/stations/8`, `/login`, `/register`, `/api/vehicle-models` → `200`; `GET /api/availability` pro VW e-up! (40 kW) → DC 07 `AUTO`, HPC 08–10 `EXCEPTION`.
+- OP-05 Approve / Reject – záložka Schvalování `/admin/reservations` (fronta podle termínu rozhodnutí), `POST /reservations/<id>/approve|reject`.
+- Ruční běh přes curl proti serveru (5. 10. 2026, rezervace na 6. 10.): OP-01 pro PHEV → HPC 08–10 `UNAVAILABLE VEHICLE`, DC 07 volná „vyžaduje schválení“ → OP-02 HPC 08 `201 DRAFT` → OP-03 `PENDING_APPROVAL`, lhůta 09:45 → OP-01 HPC 08 `UNAVAILABLE PENDING_APPROVAL` → schválení ne-adminem `403` → admin approve `CONFIRMED` + notifikace žadateli → admin cancel `CANCELLED_BY_ADMIN` → OP-01 `available: true`.
 
 Skutečně provedené příklady ověření:
-- `python scripts/verify_c02.py` – nové a změněné příklady V1–V9 z baseline v0.2 přes HTTP (řízené hodiny, „teď“ 15. 9. 2026 08:00), výsledek **18/18 OK**, exit 0:
+- `python scripts/verify_c02.py` – nové/změněné příklady V1–V9 z baseline v0.2 přes HTTP (řízené hodiny, „teď“ 15. 9. 2026 08:00), výsledek **14/14 OK**, exit 0:
   ```
-  [OK] V1  OP-03 Enyaq 135 kW potvrdí HPC 08 [10:00, 11:00)   -> CONFIRMED (bez schválení)
-  [OK] V2  OP-03 e-up! 40 kW (< 75 kW) potvrdí HPC 09           -> PENDING_APPROVAL, rozhodnout do 09:45
-  [OK] V2b OP-01 Enyaq na HPC 09 [10:30, 11:30)                -> UNAVAILABLE (PENDING_APPROVAL)
-  [OK] V2c OP-03 kolidující návrh jiného uživatele             -> 409, zůstává DRAFT
-  [OK] V3  OP-03 Outlander PHEV 22 kW (< 25 kW) potvrdí DC 07  -> PENDING_APPROVAL
-  [OK] V3b OP-01 RAV4 Plug-in (jen AC): DC 07 / HPC 10 / AC 01 -> NO_DC / VEHICLE / AVAILABLE (AUTO)
-  [OK] V3c OP-02 RAV4 Plug-in na DC 07                         -> 400
-  [OK] V5  OP-05 admin zamítne výjimku DC 07                   -> REJECTED, OP-01 AVAILABLE, notifikace
-  [OK] V9  OP-05 schválení ne-adminem                          -> 403, zůstává PENDING_APPROVAL
-  [OK] V4  OP-05 admin schválí výjimku v 09:00                 -> CONFIRMED, notifikace
-  [OK] V7  OP-04 stažení žádosti v 09:40                       -> CANCELLED
-  [OK] V6  BR-06 nerozhodnuto do 09:45, v 09:46                -> EXPIRED, OP-01 AVAILABLE; pozdní approve 409
-  [OK] V8  OP-03 e-up! na HPC 10 v 09:46                       -> 409 nezbývá čas, zůstává DRAFT
-  [OK] V8b OP-03 Enyaq na tentýž slot v 09:46                  -> CONFIRMED (výjimka není potřeba)
+  [OK] V1  OP-03 HPC 08 [10:00, 11:00) v 08:00          -> PENDING_APPROVAL, rozhodnout do 09:45
+  [OK] V2  OP-01 BEV HPC 08 [10:30, 11:30)              -> UNAVAILABLE (PENDING_APPROVAL)
+  [OK] V2b OP-03 kolidující návrh jiného uživatele      -> 409, zůstává DRAFT
+  [OK] V3  OP-03 PHEV AC 01 [10:00, 10:30)              -> CONFIRMED (bez schválení)
+  [OK] V5  OP-05 admin zamítne DC 07 [12:00, 13:00)     -> REJECTED, OP-01 AVAILABLE, notifikace
+  [OK] V9  OP-05 schválení ne-adminem                   -> 403, zůstává PENDING_APPROVAL
+  [OK] V4  OP-05 admin schválí v 09:00                  -> CONFIRMED, notifikace
+  [OK] V7  OP-04 stažení žádosti v 09:40                -> CANCELLED (30min limit neplatí)
+  [OK] V6  BR-06 nerozhodnuto do 09:45, v 09:46         -> EXPIRED, OP-01 AVAILABLE; pozdní approve 409
+  [OK] V8  OP-03 DC 07 [10:00, 10:30) v 09:46           -> 409 nezbývá čas, zůstává DRAFT
   ```
-- `pytest`: **82 passed** – 66 doménových testů (všechny příklady ověření OP-01–OP-05 z v0.1 i v0.2, hranice „polovina výkonu stanice“ 24/25 kW a 74/75 kW, lhůty 5 / 15 / 30 min, DB triggery) a 16 webových (tok podle aktivitního diagramu OP-01/02, CSRF, role, CP1, JSON kódy 400/401/403/404/409).
-- V10 / REQ-04 souběh: `test_op03_req04_concurrent_confirms_allow_exactly_one` – 10 vláken s 10 vlastními DB připojeními potvrzuje kolidující DRAFT současně → právě 1× CONFIRMED (AC 01, Enyaq), resp. 1× PENDING_APPROVAL (HPC 08, e-up!), 9× odmítnuto.
-- C01 spike `scripts/spike_persistence.py` upraven na API v0.2 – stále všechny kontroly OK.
+- `pytest`: **73 passed** – 57 doménových testů (všechny příklady ověření OP-01–OP-05 z v0.1 i v0.2, hranice lhůt 5 min / 15 min / 30 min, DB triggery) a 16 webových (tok podle aktivitního diagramu OP-01/02, CSRF, role, CP1, JSON kódy 400/401/403/404/409).
+- V10 / REQ-04 souběh: `test_op03_req04_concurrent_confirms_allow_exactly_one` – 10 vláken s 10 vlastními DB připojeními potvrzuje kolidující DRAFT současně → právě 1× PENDING_APPROVAL (HPC 08), resp. 1× CONFIRMED (AC 01), 9× odmítnuto.
+- C01 spike `scripts/spike_persistence.py` upraven na API v0.2 – stále všechny kontroly OK (overlap blokuje trigger `BLOCKING_OVERLAP`).
 
 Nalezený nesoulad a způsob vyřešení:
-- Aplikace z C01 neodpovídala ani baseline v0.1: schvalovaly se všechny stanice (DRAFT → PENDING → CONFIRMED), kolize se kontrolovaly už při Create, typ vozu byl jen v profilu a chyběla SPZ, DRAFT neexpiroval, chyběl 30min storno limit i stav CANCELLED_BY_ADMIN. → Aplikace přegenerována podle baseline v0.2. Databázi se starším schématem aplikace při startu přesune do zálohy.
-- Pracovní podmínka C02 „každou rezervaci DC/HPC schvaluje administrátor“ neměla věcný důvod: admin by schvaloval i vozidla, která rychlou nabíječku plně využijí. → Podmínka upřesněna: o připuštění rozhoduje max. DC výkon vozidla z katalogu (aspoň polovina výkonu stanice = automaticky, méně = výjimka se schválením, bez DC = nesmí). Změna se tím dotkla i OP-02 (vozidlo z katalogu místo ručně zadaného typu); bod 12 i 13 v docx jsou upravené.
-- Mezera ve specifikaci: potvrzení výjimky méně než 15 min před začátkem by vytvořilo žádost, která je už po lhůtě. → Doplněno do BR-06 a OP-03: potvrzení se odmítne a rezervace zůstává DRAFT (V8); vozidlo bez potřeby výjimky tuto lhůtu nemá (V8b).
+- Aplikace z C01 neodpovídala ani baseline v0.1: schvalovaly se všechny stanice (DRAFT → PENDING → CONFIRMED), kolize se kontrolovaly už při Create, typ vozu byl jen v profilu a chyběla SPZ, DRAFT neexpiroval, chyběl 30min storno limit i stav CANCELLED_BY_ADMIN. → Aplikace přegenerována podle baseline v0.2. Schéma DB má verzi 2 a starší databázi aplikace při startu přesune do zálohy `charging.db.v0.bak`.
+- Mezera ve specifikaci: potvrzení DC/HPC méně než 15 min před začátkem by vytvořilo žádost, která je už po lhůtě. → Doplněno do BR-06 a OP-03: potvrzení se odmítne a rezervace zůstává DRAFT (V8).
 - Rozpor v pracovní verzi bodů 13/15: „zrušení PENDING_APPROVAL > 30 min předem“ × stavový diagram „Cancel [User / Admin]“ bez podmínky. → BR-03 v0.2: stažení žádosti nemá 30min limit (V7).
-- Kontrola UI proti docx: formulář vypadal jako „vyhledávání podle SPZ“, výsledky ukazovaly i obsazená stání a tlačítko „Vytvořit a potvrdit“ slučovalo OP-02 a OP-03. → UI upraveno přesně podle aktivitního diagramu OP-01/02 (SPZ se zadává v kroku 1, ale dostupnost na ní nezávisí; zobrazí se jen stání, která vozidlo může použít; výběr vytvoří jen DRAFT, potvrzení je samostatná akce OP-03).
+- Kontrola UI proti docx (po předvedení): formulář vypadal jako „vyhledávání podle SPZ“, výsledky ukazovaly i obsazené stanice a tlačítko „Vytvořit a potvrdit“ slučovalo OP-02 a OP-03, které docx vede jako dvě samostatné akce uživatele. → UI upraveno přesně podle aktivitního diagramu OP-01/02: SPZ se zadává v kroku 1, ale dostupnost na ní nezávisí (OP-01 ji nepoužívá), zobrazí se jen volné stanice (PHEV bez HPC) a výběr stanice vytvoří jen DRAFT; potvrzení je samostatné tlačítko „Potvrdit“ (OP-03).
 - Pracovní verze uváděla Administrátora jako nového aktéra, ale v diagramu případů užití je už ve v0.1. → Nový aktér nevzniká, Admin získává nový cíl OP-05. Lokální čísla pravidel v OP-01/OP-02 (BR-02 Compatibility, BR-03 Expiration) neodpovídala katalogu → v dotčených částech v0.2 odkazujeme na katalog (BR-04, BR-05).
 
 Shrnutí dopadu změny:
-- Nová operace OP-05 (rozhodnutí o výjimce) pro roli Admin, nové BR-06, upravené BR-02 a BR-03; OP-02 nově vybírá vozidlo z katalogu; BR-01, BR-04 a BR-05 beze změny.
-- Nový persistentní pojem: katalog modelů vozidel (pohon, max. DC výkon).
-- Životní cyklus rozšířen o PENDING_APPROVAL (žádost o výjimku) a REJECTED, EXPIRED nově i pro nerozhodnuté výjimky.
-- OP-03 se větví podle stanice a vozidla, OP-01 vrací i způsob připuštění, OP-04 umí stáhnout žádost.
-- V aplikaci: katalog vozidel, endpointy confirm / approve / reject, fronta výjimek, DB triggery `BLOCKING_OVERLAP`, `DC_NOT_SUPPORTED`, `APPROVAL_REQUIRED` a přechody stavů v0.2, nové UI.
+- Nová operace OP-05 pro roli Admin, nové BR-06, upravené BR-02 a BR-03; OP-02, BR-01, BR-04, BR-05 beze změny.
+- Životní cyklus rozšířen o PENDING_APPROVAL a REJECTED, EXPIRED nově i pro nerozhodnuté žádosti.
+- OP-03 se větví podle výkonu stanice (AC × DC/HPC), OP-01 a OP-04 nově pracují s PENDING_APPROVAL.
+- V aplikaci: endpointy confirm/approve/reject, fronta schvalování, DB triggery `BLOCKING_OVERLAP`, `APPROVAL_REQUIRED` a přechody stavů v0.2.
 
 Zbývající předpoklad / neznámá:
 - Expirace (BR-05, BR-06) je zatím „líná“ – zapíše se až při nejbližším požadavku na aplikaci a o propadnutí žádosti se žadatel nedozví notifikací. Pro C02 to stačí, řešení patří do C03 (AD-1).
-- Hodnoty max. DC výkonu v katalogu jsou orientační údaje výrobců a předpokládáme, že uživatel vybere model, který odpovídá SPZ. Ověření vozidla na místě (Unknown z Project Frame) zůstává otevřené.
-- Hranice „polovina výkonu stanice“ je volba týmu, s provozovatelem parkoviště není ověřená.
-- Předpokládáme, že admin rozhodne včas i mimo pracovní dobu; není určeno, zda má výjimka po lhůtě eskalovat, ani zda smí admin schválit vlastní žádost (nyní smí).
+- Předpokládáme, že admin rozhodne včas i mimo pracovní dobu; není určeno, zda má žádost po lhůtě eskalovat nebo se automaticky schválit (nyní propadne). Není určeno ani to, zda smí admin schválit vlastní žádost (nyní smí).
 - Limity z C01 (max. 4 h, max. 14 dní dopředu) nejsou v baseline; v aplikaci zůstávají jako technická validace vstupu.
 
 Architektonické drivery přenesené do C03:
 - AD-1 Časově řízené přechody: DRAFT → EXPIRED (5 min) a PENDING_APPROVAL → EXPIRED (T_start − 15 min) i bez provozu, včetně uvolnění slotu a notifikace → plánovač / background worker.
 - AD-2 Atomická alokace při souběhu: BR-02 nově hlídají dvě operace (Confirm, Approve) nad dvěma blokujícími stavy; při 10× souběhu (future pressure Q) SQLite serializuje všechny zápisy (`BEGIN IMMEDIATE`).
-- AD-3 Spolehlivé asynchronní notifikace: výsledek výjimky a uvolnění slotu se nesmí ztratit ani blokovat či zvrátit transakci (dnes synchronně po commitu, chyba se jen zaloguje).
-- AD-4 Autorizace podle role a dohledatelnost: OP-05 je první operace jen pro Admina – kontrola na serveru u každé operace; kdo a kdy výjimku udělil, se zatím neukládá.
+- AD-3 Spolehlivé asynchronní notifikace: výsledek schválení/zamítnutí a uvolnění slotu se nesmí ztratit ani blokovat či zvrátit transakci (dnes synchronně po commitu, chyba se jen zaloguje).
+- AD-4 Autorizace podle role a dohledatelnost: OP-05 je první operace jen pro Admina – kontrola na serveru u každé operace; kdo a kdy rozhodl, se zatím neukládá.
 
 Commit / tag aplikace:
-- větev `c02-baseline-v0.2`, commit `9704809`, tag `v0.2.2` (starší tagy `v0.2.0` a `v0.2.1` jsou pracovní verze se schvalováním všech DC/HPC rezervací)
+- větev `c02-baseline-v0.2`, commit `3080b2a`, tag `v0.2.1` (předchozí `v0.2.0` = `c5178c9` ještě se sloučeným „Vytvořit a potvrdit“ v UI)

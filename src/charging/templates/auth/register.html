@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import vehicle_select %}
+{% from "_macros.html" import vehicle_label %}
 {% block title %}Registrace{% endblock %}
 {% block content %}
 <section class="narrow">
@@ -12,8 +12,13 @@
       <input id="r-pass" type="password" name="password" required minlength="8" autocomplete="new-password"></label>
     <label class="field" for="r-pass2"><span>Heslo znovu</span>
       <input id="r-pass2" type="password" name="password_again" required minlength="8" autocomplete="new-password"></label>
-    <label class="field" for="r-vehicle"><span>Vaše vozidlo</span>{{ vehicle_select(models, form.vehicle_model_id, 'r-vehicle') }}</label>
-    <p class="note">Vozidlo se předvyplní do rezervací. Podle jeho nabíjecího výkonu poznáme, na která rychlá stání může.</p>
+    <fieldset>
+      <legend>Typ vašeho vozu</legend>
+      {% for v in ('BEV', 'PHEV') %}
+      <label class="choice"><input type="radio" name="vehicle_type" value="{{ v }}"{% if form.vehicle_type == v %} checked{% endif %}> {{ vehicle_label(v) }}</label>
+      {% endfor %}
+    </fieldset>
+    <p class="note">Typ vozu se předvyplní do rezervací. Plug-in hybrid nemůže na HPC stání.</p>
     <div><button class="btn">Vytvořit účet</button></div>
   </form>
 </section>

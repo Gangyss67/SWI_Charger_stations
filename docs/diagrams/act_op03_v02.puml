@@ -9,15 +9,14 @@ if (Uplynulo od vytvoření více než 5 minut? (BR-05)) then (ano)
   stop
 else (ne)
 endif
-#FFF3C4:if (Rychlá stanice a vozidlo nabíjí méně
-než polovinou jejího výkonu? (BR-06)) then (ano – výjimka)
+#FFF3C4:if (Výkon stanice ≥ 50 kW – DC/HPC? (BR-06)) then (ano)
   #FFF3C4:if (T_nyní ≤ T_start − 15 min?) then (ne)
-    #FFF3C4:Zamítnout potvrzení – na schválení výjimky
-    nezbývá čas (rezervace zůstává DRAFT);
+    #FFF3C4:Zamítnout potvrzení – na schválení nezbývá čas
+    (rezervace zůstává DRAFT);
     stop
   else (ano)
   endif
-else (ne)
+else (ne – AC)
 endif
 :Zahájit atomickou transakci;
 #FFF3C4:if (Překryv s CONFIRMED nebo PENDING_APPROVAL? (BR-02)) then (ano)
@@ -26,11 +25,11 @@ endif
   stop
 else (ne)
 endif
-#FFF3C4:if (Výjimka?) then (ano)
+#FFF3C4:if (DC/HPC stanice?) then (ano)
   #FFF3C4:Změnit stav na PENDING_APPROVAL;
   #FFF3C4:Nastavit termín rozhodnutí T_start − 15 min
   (žádost se objeví ve frontě administrátora);
-else (ne – AC nebo dost výkonné vozidlo)
+else (ne – AC)
   :Změnit stav na CONFIRMED;
 endif
 :Commit transakce;

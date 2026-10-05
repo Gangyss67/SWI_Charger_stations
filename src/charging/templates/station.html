@@ -9,7 +9,7 @@
     <div class="station-title">
       <p class="eyebrow">Stání {{ bay_no(station.name) }}</p>
       <h1>{{ bay_kind(station.name) }} {{ station.power_kw }} kW</h1>
-      {{ rules(station.is_high_speed, min_kw) }}
+      {{ rules(station.is_high_speed, needs_approval) }}
     </div>
   </div>
 </section>
@@ -44,7 +44,7 @@
   </div>
   <div class="legend">
     <span><i class="cell"></i>volno</span>
-    <span><i class="cell pending"></i>výjimka čeká na schválení</span>
+    <span><i class="cell pending"></i>čeká na schválení</span>
     <span><i class="cell reserved"></i>rezervováno</span>
     <span><i class="cell in_use"></i>právě nabíjí</span>
     <span><i class="cell past"></i>uplynulo</span>
@@ -71,7 +71,7 @@
         <select id="r-slots" name="slots">
           {% for n in range(1, max_slots + 1) %}<option value="{{ n }}"{% if n == selected_slots %} selected{% endif %}>{{ '%d:%02d' % (n // 2, 30 * (n % 2)) }} h</option>{% endfor %}
         </select></label>
-      <label class="field" for="r-vehicle"><span>Vozidlo</span>{{ vehicle_select(models, vehicle_model_id, 'r-vehicle') }}</label>
+      <label class="field" for="r-vehicle"><span>Typ vozu</span>{{ vehicle_select(vehicle_types, vehicle_type, 'r-vehicle') }}</label>
       <label class="field" for="r-plate"><span>SPZ</span>
         <input id="r-plate" name="license_plate" value="{{ license_plate }}" maxlength="12" placeholder="1AB 2345" autocomplete="off" required></label>
       <button class="btn">Vytvořit návrh</button>
@@ -80,11 +80,10 @@
   </div>
   <aside class="rules">
     <p><strong>Návrh platí 5 minut.</strong> Stání neblokuje, dokud ho v Mých rezervacích nepotvrdíte.</p>
-    {% if fast %}
-    <p><strong>Vozidlo od {{ min_kw }} kW</strong> dostane stání hned po potvrzení. Slabší vozidlo jen jako výjimku, o které rozhodne administrátor nejpozději 15 minut před začátkem. Do té doby je termín blokovaný.</p>
-    <p>Vozidlo, které neumí nabíjet stejnosměrně (DC), sem nemůže.</p>
+    {% if needs_approval %}
+    <p><strong>Se schválením.</strong> Po potvrzení musí rezervaci schválit administrátor, nejpozději 15 minut před začátkem. Do té doby je termín pro vás blokovaný.</p>
     {% else %}
-    <p>Na AC stání může každé vozidlo a rezervace platí hned po potvrzení.</p>
+    <p>Na AC stání platí rezervace hned po potvrzení.</p>
     {% endif %}
     {% if station.is_high_speed %}<p>HPC stání je jen pro elektromobily, plug-in hybrid sem nemůže.</p>{% endif %}
     <p>Potvrzenou rezervaci zrušíte nejpozději 30 minut před začátkem.</p>

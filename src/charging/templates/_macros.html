@@ -24,25 +24,22 @@
   <span class="plate" title="SPZ {{ number }}"><span class="plate-eu" aria-hidden="true">CZ</span><span class="plate-no">{{ number }}</span></span>
 {%- endmacro %}
 
-{# Pravidla stání: HPC jen BEV (BR-04), rychlá stanice automaticky pro vozidlo od poloviny jejího výkonu (BR-06). #}
-{% macro rules(is_high_speed, min_kw) -%}
-  {%- if is_high_speed or min_kw -%}
+{# Pravidla stání: HPC jen BEV (BR-04), DC a HPC se schválením administrátora (BR-06). #}
+{% macro rules(is_high_speed, needs_approval) -%}
+  {%- if is_high_speed or needs_approval -%}
   <span class="tags">
     {%- if is_high_speed %}<span class="tag hpc">jen BEV</span>{% endif -%}
-    {%- if min_kw %}<span class="tag approval">vozidlo od {{ min_kw }} kW</span>{% endif -%}
+    {%- if needs_approval %}<span class="tag approval">se schválením</span>{% endif -%}
   </span>
   {%- endif -%}
 {%- endmacro %}
 
-{# Výběr vozidla z katalogu; u každého modelu jeho max. DC nabíjecí výkon. #}
-{% macro vehicle_select(models, selected, id) -%}
-  <select name="vehicle_model_id" id="{{ id }}" required>
-    <optgroup label="Elektromobily (BEV)">
-      {%- for m in models if m.vehicle_type == 'BEV' %}<option value="{{ m.id }}"{% if m.id == selected %} selected{% endif %}>{{ m.name }} · {{ m.max_dc_kw }} kW DC</option>{% endfor -%}
-    </optgroup>
-    <optgroup label="Plug-in hybridy (PHEV)">
-      {%- for m in models if m.vehicle_type == 'PHEV' %}<option value="{{ m.id }}"{% if m.id == selected %} selected{% endif %}>{{ m.name }} · {% if m.max_dc_kw %}{{ m.max_dc_kw }} kW DC{% else %}jen AC{% endif %}</option>{% endfor -%}
-    </optgroup>
+{% macro vehicle_label(code) -%}{{ 'Elektromobil (BEV)' if code == 'BEV' else 'Plug-in hybrid (PHEV)' }}{%- endmacro %}
+
+{# Výběr typu vozu (OP-02: typ vozu a SPZ). #}
+{% macro vehicle_select(types, selected, id) -%}
+  <select name="vehicle_type" id="{{ id }}" required>
+    {%- for v in types %}<option value="{{ v }}"{% if v == selected %} selected{% endif %}>{{ vehicle_label(v) }}</option>{% endfor -%}
   </select>
 {%- endmacro %}
 

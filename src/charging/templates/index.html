@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import lamp, rules, vehicle_select, bay_no, bay_kind %}
+{% from "_macros.html" import lamp, vehicle_select, bay_no, bay_kind %}
 {% block title %}Parkoviště{% endblock %}
 {% block content %}
 {% set in_use = stations|selectattr('status', 'equalto', 'IN_USE')|list|length %}
@@ -24,14 +24,14 @@
         <span class="bay-no">{{ bay_no(st.name) }}</span>
         <span class="bay-rules">
           {%- if st.is_high_speed %}<span>jen BEV</span>{% endif -%}
-          {%- if st.min_vehicle_kw %}<span>od {{ st.min_vehicle_kw }} kW</span>{% endif -%}
+          {%- if st.requires_approval %}<span>schválení</span>{% endif -%}
         </span>
         <span class="bay-state">{{ lamp(st.status) }}{% if st.status_info %}<small>{{ st.status_info }}</small>{% endif %}</span>
       </a>
       {% endfor %}
     </div>
   </div>
-  <p class="note">Rychlá stání DC a HPC jsou automaticky pro vozidla, která nabíjí aspoň polovinou jejich výkonu. Slabší vozidlo je dostane jen jako výjimku od administrátora.</p>
+  <p class="note">Rezervaci rychlých stání DC a HPC musí po potvrzení schválit administrátor, nejpozději 15 minut před začátkem. HPC stání jsou jen pro elektromobily.</p>
 </section>
 
 <section class="panel" id="search">
@@ -40,7 +40,7 @@
   <div class="step">
     <span class="step-no" aria-hidden="true">1</span>
     <div class="step-body">
-      <h3>Termín, vozidlo{% if g.user %} a SPZ{% endif %}</h3>
+      <h3>Termín, typ vozu{% if g.user %} a SPZ{% endif %}</h3>
       <form method="get" action="{{ url_for('main.index') }}#search" class="fields">
         <label class="field" for="f-date"><span>Datum</span>
           <input type="date" id="f-date" name="date" value="{{ form.date }}" min="{{ today.isoformat() }}" max="{{ last_day.isoformat() }}" required></label>
@@ -52,12 +52,12 @@
           <select id="f-slots" name="slots">
             {% for n in range(1, max_slots + 1) %}<option value="{{ n }}"{% if n == form.slots %} selected{% endif %}>{{ '%d:%02d' % (n // 2, 30 * (n % 2)) }} h</option>{% endfor %}
           </select></label>
-        <label class="field" for="f-vehicle"><span>Vozidlo</span>{{ vehicle_select(models, form.vehicle_model_id, 'f-vehicle') }}</label>
+        <label class="field" for="f-vehicle"><span>Typ vozu</span>{{ vehicle_select(vehicle_types, form.vehicle_type, 'f-vehicle') }}</label>
         {% if g.user %}<label class="field" for="f-plate"><span>SPZ</span>
           <input id="f-plate" name="license_plate" value="{{ form.license_plate }}" maxlength="12" placeholder="1AB 2345" autocomplete="off" required></label>{% endif %}
         <button class="btn">Najít volná stání</button>
       </form>
-      <p class="note">Volná stání hledáme podle termínu a vozidla.{% if g.user %} SPZ se uloží k vytvořenému návrhu.{% else %} Rezervovat můžete po <a href="{{ url_for('auth.login') }}">přihlášení</a>.{% endif %}</p>
+      <p class="note">Volná stání hledáme podle termínu a typu vozu.{% if g.user %} SPZ se uloží k vytvořenému návrhu.{% else %} Rezervovat můžete po <a href="{{ url_for('auth.login') }}">přihlášení</a>.{% endif %}</p>
     </div>
   </div>
 
@@ -66,14 +66,9 @@
     <span class="step-no" aria-hidden="true">2</span>
     <div class="step-body">
       <h3>Vyberte stání</h3>
-      {% set only_bev = excluded|selectattr('reason', 'equalto', 'VEHICLE')|map(attribute='name')|list %}
-      {% set no_dc = excluded|selectattr('reason', 'equalto', 'NO_DC')|map(attribute='name')|list %}
-      {% if excluded %}<p class="note">
-        {%- if only_bev %}{{ only_bev|join(', ') }} jsou jen pro elektromobily. {% endif -%}
-        {%- if no_dc %}{{ no_dc|join(', ') }} vaše vozidlo nepřipustí, protože neumí nabíjet stejnosměrně (DC).{% endif -%}
-      </p>{% endif %}
+      {% if excluded %}<p class="note">{{ excluded|join(', ') }} jsou jen pro elektromobily, plug-in hybrid je proto nenabízíme.</p>{% endif %}
       {% if not free_stations %}
-        <p class="empty">V tomto termínu není volné žádné stání, které vaše vozidlo může použít. Zkuste jiný čas.</p>
+        <p class="empty">V tomto termínu není volné žádné vhodné stání. Zkuste jiný čas.</p>
       {% else %}
       <div class="choices">
         {% for st in free_stations %}
@@ -81,12 +76,12 @@
           <span class="choice-no">{{ bay_no(st.name) }}</span>
           <div class="choice-meta">
             <a href="{{ url_for('main.station_detail', station_id=st.station_id, date=form.date, time=form.time) }}">{{ st.name }} · {{ st.power_kw }} kW</a>
-            <small>{{ st.message }}</small>
+            <small>{% if st.requires_approval %}Po potvrzení musí rezervaci schválit administrátor, nejpozději 15 minut před začátkem.{% else %}Rezervace platí hned po potvrzení.{% endif %}</small>
           </div>
           {% if g.user %}
           <form method="post" action="{{ url_for('main.create_reservation') }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            {% for name in ('date', 'time', 'slots', 'vehicle_model_id', 'license_plate') %}<input type="hidden" name="{{ name }}" value="{{ form[name] }}">{% endfor %}
+            {% for name in ('date', 'time', 'slots', 'vehicle_type', 'license_plate') %}<input type="hidden" name="{{ name }}" value="{{ form[name] }}">{% endfor %}
             <input type="hidden" name="station_id" value="{{ st.station_id }}">
             <button class="btn small{% if st.requires_approval %} quiet{% endif %}">Vytvořit návrh</button>
           </form>

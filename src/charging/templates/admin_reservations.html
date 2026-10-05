@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import state, plate, station_cell, action_button %}
+{% from "_macros.html" import state, plate, station_cell, action_button, vehicle_label %}
 {% block title %}Schvalování{% endblock %}
 {% block content %}
 <div class="page-head">
@@ -7,7 +7,7 @@
     <p class="eyebrow">Administrátor</p>
     <h1>Schvalování</h1>
   </div>
-  {% if state == 'PENDING_APPROVAL' %}<p class="lede">Žádosti o výjimku: vozidlo nabíjí méně než polovinou výkonu rychlé stanice. Rozhodněte nejpozději 15 minut před začátkem, jinak žádost propadne a termín se uvolní.</p>{% endif %}
+  {% if state == 'PENDING_APPROVAL' %}<p class="lede">Rezervace rychlých stání DC a HPC. Rozhodněte nejpozději 15 minut před začátkem, jinak žádost propadne a termín se uvolní.</p>{% endif %}
 </div>
 <nav class="filters" aria-label="Stav rezervací">
   {% for code, label in tabs %}
@@ -27,7 +27,7 @@
       <td>{{ r.username }}</td>
       <td>{{ station_cell(r) }}</td>
       <td class="mono">{{ r.start_time|timerange(r.end_time) }}</td>
-      <td><div class="status">{{ plate(r.license_plate) }}<small>{{ r.vehicle_name }}, {% if r.max_dc_kw %}{{ r.max_dc_kw }} kW DC{% else %}jen AC{% endif %}{% if r.min_vehicle_kw %} (stání od {{ r.min_vehicle_kw }} kW){% endif %}</small></div></td>
+      <td><div class="status">{{ plate(r.license_plate) }}<small>{{ vehicle_label(r.vehicle_type) }}</small></div></td>
       <td><div class="status">
         <span>{{ state(r.state) }}</span>
         {% if r.usage %}<span class="status-hint">{{ r.usage }}</span>{% endif %}

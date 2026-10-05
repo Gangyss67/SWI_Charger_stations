@@ -19,15 +19,16 @@ from .services.reservations import (
     MAX_SLOTS,
     PENDING_APPROVAL,
     REJECTED,
+    VEHICLE_BEV,
+    VEHICLE_TYPES,
     ConflictError,
     InvalidStateError,
     NotFoundError,
     PermissionDeniedError,
     ReservationError,
     ReservationService,
-    is_fast,
-    min_vehicle_kw,
     parse_slot_start,
+    requires_approval,
 )
 from .timeutil import ceil_to_slot, time_options
 
@@ -79,15 +80,8 @@ def _day_label(day: date, today: date) -> str:
     return f"{prefix}{weekday if prefix else weekday.capitalize()} {day.day}. {MONTHS[day.month - 1]}"
 
 
-def _default_vehicle_model_id() -> int | None:
-    return g.user["vehicle_model_id"] if g.user else None
-
-
-def _selected_vehicle_model_id(value) -> int | None:
-    try:
-        return int(value) if value not in (None, "") else _default_vehicle_model_id()
-    except (TypeError, ValueError):
-        return _default_vehicle_model_id()
+def _default_vehicle() -> str:
+    return g.user["vehicle_type"] if g.user else VEHICLE_BEV
 
 
 @bp.app_context_processor
@@ -99,40 +93,39 @@ def inject_pending_approvals():
 
 @bp.route("/")
 def index():
-    """Parkoviště + tok z aktivitního diagramu OP-01/OP-02: uživatel zadá interval, vozidlo a SPZ,
-    systém zobrazí volné stanice, které vozidlo připustí, uživatel vybere stanici a vytvoří návrh.
-    Dostupnost (OP-01) se počítá z intervalu a vozidla, SPZ se použije až v OP-02."""
+    """Parkoviště + tok z aktivitního diagramu OP-01/OP-02: uživatel zadá interval, typ vozu a SPZ,
+    systém zobrazí seznam volných stanic (PHEV bez HPC), uživatel vybere stanici a vytvoří návrh.
+    Dostupnost (OP-01) se počítá jen z intervalu a typu vozu, SPZ se použije až v OP-02."""
     svc = _service()
     now = svc.now()
     suggested = ceil_to_slot(now + timedelta(minutes=30))
-    models = svc.list_vehicle_models()
     form = {
         "date": request.args.get("date") or suggested.date().isoformat(),
         "time": request.args.get("time") or f"{suggested:%H:%M}",
         "slots": request.args.get("slots", type=int) or 2,
-        "vehicle_model_id": _selected_vehicle_model_id(request.args.get("vehicle_model_id")) or models[0]["id"],
+        "vehicle_type": request.args.get("vehicle_type") or _default_vehicle(),
         "license_plate": request.args.get("license_plate", ""),
     }
     free_stations, excluded = None, []
     if "time" in request.args:
         try:
             start = parse_slot_start(form["date"], form["time"])
-            results = svc.search_availability(start, form["slots"], form["vehicle_model_id"])
+            results = svc.search_availability(start, form["slots"], form["vehicle_type"])
         except ReservationError as exc:
             flash(str(exc), "error")
         else:
             free_stations = [r for r in results if r["available"]]
-            excluded = [r for r in results if r["reason"] in ("VEHICLE", "NO_DC")]
+            excluded = [r["name"] for r in results if r["reason"] == "VEHICLE"]
     return render_template(
         "index.html",
         stations=svc.stations_overview(),
         now=now,
         form=form,
-        models=models,
         free_stations=free_stations,
         excluded=excluded,
         time_options=time_options(),
         max_slots=MAX_SLOTS,
+        vehicle_types=VEHICLE_TYPES,
         today=now.date(),
         last_day=now.date() + timedelta(days=BOOKING_HORIZON_DAYS),
     )
@@ -152,11 +145,13 @@ def station_detail(station_id: int):
     selected_time = request.args.get("time", "")
     if selected_time not in time_options():
         selected_time = next((s["time"] for s in slots if s["state"] == "FREE"), "")
+    vehicle_type = request.args.get("vehicle_type") or _default_vehicle()
+    if station["is_high_speed"]:
+        vehicle_type = VEHICLE_BEV
     return render_template(
         "station.html",
         station=station,
-        fast=is_fast(station),
-        min_kw=min_vehicle_kw(station),
+        needs_approval=requires_approval(station),
         day=day,
         day_label=_day_label(day, today),
         today=today,
@@ -167,8 +162,8 @@ def station_detail(station_id: int):
         time_options=time_options(),
         selected_time=selected_time,
         max_slots=MAX_SLOTS,
-        models=svc.list_vehicle_models(),
-        vehicle_model_id=_selected_vehicle_model_id(request.args.get("vehicle_model_id")),
+        vehicle_types=(VEHICLE_BEV,) if station["is_high_speed"] else VEHICLE_TYPES,
+        vehicle_type=vehicle_type,
         license_plate=request.args.get("license_plate", ""),
         selected_slots=request.args.get("slots", type=int) or 1,
     )
@@ -176,11 +171,10 @@ def station_detail(station_id: int):
 
 def _confirm_message(svc: ReservationService, reservation_id: int, state: str) -> str:
     if state == PENDING_APPROVAL:
-        res = svc.get_reservation(reservation_id)
-        deadline = res["approval_deadline"]
+        deadline = svc.get_reservation(reservation_id)["approval_deadline"]
         return (
-            f"Žádost o výjimku #{reservation_id} je odeslaná. Termín je pro vás zablokovaný a administrátor "
-            f"rozhodne nejpozději {deadline[8:10]}.{deadline[5:7]}. v {deadline[11:16]}."
+            f"Rezervace #{reservation_id} čeká na schválení administrátorem. Termín je pro vás zablokovaný "
+            f"a administrátor rozhodne nejpozději {deadline[8:10]}.{deadline[5:7]}. v {deadline[11:16]}."
         )
     return f"Rezervace #{reservation_id} je potvrzená."
 
@@ -188,8 +182,7 @@ def _confirm_message(svc: ReservationService, reservation_id: int, state: str) -
 @bp.post("/reservations")
 @login_required
 def create_reservation():
-    """OP-02 Create -> DRAFT.
-    JSON {station_id, date, time, slots, vehicle_model_id, license_plate} -> 201 + rezervace.
+    """OP-02 Create -> DRAFT. JSON {station_id, date, time, slots, vehicle_type, license_plate} -> 201 + rezervace.
     Potvrzení (OP-03) je samostatná akce uživatele."""
     svc = _service()
     if request.is_json:
@@ -206,7 +199,7 @@ def create_reservation():
                 station_id,
                 start,
                 data.get("slots"),
-                data.get("vehicle_model_id", g.user["vehicle_model_id"]),
+                data.get("vehicle_type", g.user["vehicle_type"]),
                 data.get("license_plate"),
             )
         except ReservationError as exc:
@@ -214,7 +207,7 @@ def create_reservation():
         return jsonify(svc.get_reservation(reservation_id)), 201
 
     station_id = request.form.get("station_id", type=int)
-    fields = {k: request.form.get(k, "") for k in ("date", "time", "vehicle_model_id", "license_plate", "slots")}
+    fields = {k: request.form.get(k, "") for k in ("date", "time", "vehicle_type", "license_plate", "slots")}
     if station_id is None:
         flash("Neplatná stanice.", "error")
         return redirect(url_for("main.index"))
@@ -225,14 +218,11 @@ def create_reservation():
             station_id,
             start,
             request.form.get("slots", type=int),
-            fields["vehicle_model_id"],
+            fields["vehicle_type"],
             fields["license_plate"],
         )
-    except NotFoundError as exc:
-        if "Model vozidla" not in str(exc):
-            abort(404)
-        flash(str(exc), "error")
-        return redirect(url_for("main.station_detail", station_id=station_id, **fields))
+    except NotFoundError:
+        abort(404)
     except ReservationError as exc:
         flash(str(exc), "error")
         return redirect(url_for("main.station_detail", station_id=station_id, **fields))
@@ -289,14 +279,14 @@ def cancel_reservation(reservation_id: int):
 @login_required
 def approve_reservation(reservation_id: int):
     # roli Admin ověřuje služba (OP-05), ne-admin dostane 403
-    return _run_action("approve", reservation_id, lambda svc, state: f"Výjimka #{reservation_id} je schválená.")
+    return _run_action("approve", reservation_id, lambda svc, state: f"Rezervace #{reservation_id} je schválená.")
 
 
 @bp.post("/reservations/<int:reservation_id>/reject")
 @login_required
 def reject_reservation(reservation_id: int):
     return _run_action(
-        "reject", reservation_id, lambda svc, state: f"Výjimka #{reservation_id} je zamítnutá a termín je znovu volný."
+        "reject", reservation_id, lambda svc, state: f"Rezervace #{reservation_id} je zamítnutá a termín je znovu volný."
     )
 
 
@@ -332,29 +322,23 @@ def notifications_mark_read():
 
 @bp.get("/api/availability")
 def api_availability():
-    """OP-01: ?date=2026-09-15&time=10:00&slots=2&vehicle_model_id=1[&station_id=8]"""
+    """OP-01: ?date=2026-09-15&time=10:00&slots=2&vehicle_type=BEV[&station_id=8]"""
     svc = _service()
-    vehicle_model_id = request.args.get("vehicle_model_id") or (g.user["vehicle_model_id"] if g.user else None)
+    vehicle_type = request.args.get("vehicle_type") or (g.user["vehicle_type"] if g.user else None)
     station_id = request.args.get("station_id", type=int)
     try:
         start = parse_slot_start(request.args.get("date"), request.args.get("time"))
-        stations = svc.search_availability(start, request.args.get("slots", type=int), vehicle_model_id, station_id)
-        vehicle = svc.get_vehicle_model(vehicle_model_id)
+        stations = svc.search_availability(start, request.args.get("slots", type=int), vehicle_type, station_id)
     except ReservationError as exc:
         return jsonify({"error": str(exc)}), _status(exc)
     return jsonify(
         {
             "start": f"{start:%Y-%m-%d %H:%M}",
             "slots": request.args.get("slots", type=int),
-            "vehicle": dict(vehicle),
+            "vehicle_type": vehicle_type,
             "stations": stations,
         }
     )
-
-
-@bp.get("/api/vehicle-models")
-def api_vehicle_models():
-    return jsonify([dict(row) for row in _service().list_vehicle_models()])
 
 
 @bp.get("/api/stations/<int:station_id>/availability")

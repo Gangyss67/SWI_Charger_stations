@@ -50,9 +50,9 @@ Stav slotu/stanice se nepersistuje, ale počítá z rezervací: **volná**, **č
 - **Rozhodnutí:** formát je lexikograficky řaditelný, takže překryv `a.start < b.end AND b.start < a.end` funguje přímo v SQL. Zarovnání na :00/:30 hlídá služba i `CHECK`.
 - **Důsledky:** nepodporujeme více časových pásem; přechod letního/zimního času není řešen (viz Unknown v Project Frame).
 
-### D4 – Schvalují se jen výjimky podle výkonu vozidla, žádost PENDING_APPROVAL blokuje slot (C02, baseline v0.2)
-- **Původně (C01):** schvalovaly se všechny rezervace a překrývající se žádosti PENDING mohly existovat současně. První verze v0.2 schvalovala všechny DC/HPC rezervace, i když vozidlo rychlou nabíječku plně využije.
-- **Rozhodnutí:** OP-03 Confirm vede rovnou do CONFIRMED na AC stanici a na rychlé stanici (≥ 50 kW), pokud vozidlo nabíjí aspoň polovinou jejího výkonu. Slabší vozidlo na rychlé stanici jde do PENDING_APPROVAL (výjimka). Žádost blokuje slot stejně jako CONFIRMED (BR-02), takže admin nikdy neschvaluje termín, který mezitím obsadil někdo jiný; OP-05 Approve proto kolize znovu nehledá, jen hlídá roli a lhůtu T_start − 15 min.
+### D4 – Schvalování jen pro DC/HPC, žádost PENDING_APPROVAL blokuje slot (C02, baseline v0.2)
+- **Původně (C01):** schvalovaly se všechny rezervace a překrývající se žádosti PENDING mohly existovat současně.
+- **Rozhodnutí:** OP-03 Confirm na AC stanici vede rovnou do CONFIRMED, na stanici ≥ 50 kW (DC 07, HPC 08–10) do PENDING_APPROVAL. Žádost blokuje slot stejně jako CONFIRMED (BR-02), takže admin nikdy neschvaluje termín, který mezitím obsadil někdo jiný; OP-05 Approve proto kolize znovu nehledá, jen hlídá roli a lhůtu T_start − 15 min.
 - **Důsledky:** konflikt se řeší už při potvrzení (409 pro druhého žadatele), ne až u admina. Kdo má roli Admin, ověřuje služba (403), ne jen UI.
 
 ### D5 – Notification Service jako boundary za rozhraním
@@ -67,6 +67,6 @@ Stav slotu/stanice se nepersistuje, ale počítá z rezervací: **volná**, **č
 - **Rozhodnutí:** `ReservationService.expire_overdue()` je jeden samostatně commitovaný `UPDATE`, který se volá na začátku každé operace a každého dotazu na dostupnost. Musí běžet mimo transakci operace, aby odmítnuté potvrzení (rollback) nevrátilo zápis EXPIRED.
 - **Důsledky:** bez provozu se EXPIRED zapíše až při nejbližším požadavku a k propadnutí žádosti se neposílá notifikace. Správné řešení (plánovač / worker) je architektonický driver pro C03.
 
-### D8 – Vozidlo z katalogu modelů a SPZ patří k rezervaci, ne jen k účtu
-- **Rozhodnutí:** uživatel u každé rezervace vybere model vozidla z katalogu (`vehicle_models`: pohon BEV/PHEV, max. DC nabíjecí výkon) a zadá SPZ; vozidlo z profilu se jen předvyplní. Výkon se nedá deklarovat ručně, takže pravidlo BR-06 nejde obejít. BR-04 i BR-06 se vyhodnocují nad modelem v rezervaci (služba i triggery `HIGH_SPEED_BEV_ONLY`, `DC_NOT_SUPPORTED`, `APPROVAL_REQUIRED`).
-- **Důsledky:** jeden účet může rezervovat pro různá auta; katalog je potřeba udržovat (hodnoty výrobců jsou orientační); fyzické ověření vozu na místě zůstává neznámou z Project Frame.
+### D8 – Typ vozu a SPZ patří k rezervaci, ne jen k účtu
+- **Rozhodnutí:** podle OP-02 zadává uživatel typ vozu a SPZ u každé rezervace; typ vozu z profilu se jen předvyplní. BR-04 (HPC jen BEV) se vyhodnocuje nad typem vozu v rezervaci (služba i trigger).
+- **Důsledky:** jeden účet může rezervovat pro různá auta; fyzické ověření vozu na místě zůstává neznámou z Project Frame.

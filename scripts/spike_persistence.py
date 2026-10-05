@@ -32,8 +32,8 @@ def main() -> int:
     admin_id = conn.execute("SELECT id FROM users WHERE username = 'admin'").fetchone()["id"]
     svc = ReservationService(conn)
     start = floor_to_slot(datetime.now()) + timedelta(days=1)
-    # baseline v0.2: VW e-up! (40 kW) potřebuje na HPC 08 výjimku -> DRAFT -> PENDING_APPROVAL -> CONFIRMED
-    reservation_id = svc.create(user_id, 8, start, 2, 10, "1AB 2345")
+    # baseline v0.2: HPC 08 vyžaduje schválení -> DRAFT -> PENDING_APPROVAL -> CONFIRMED
+    reservation_id = svc.create(user_id, 8, start, 2, "BEV", "1AB 2345")
     svc.confirm(user_id, reservation_id)
     svc.approve(admin_id, reservation_id)
     conn.close()
@@ -55,13 +55,13 @@ def main() -> int:
     # 3) pravidlo v DB drží i po znovuotevření: překrývající DRAFT vložený mimo službu
     #    nesmí přejít do blokujícího stavu (BR-02 v0.2)
     cur = conn.execute(
-        "INSERT INTO reservations (user_id, station_id, vehicle_model_id, license_plate, start_time, end_time, state,"
-        " created_at, updated_at, draft_expires_at) VALUES (?, 8, 1, 'X', ?, ?, 'DRAFT', 'x', 'x', 'x')",
+        "INSERT INTO reservations (user_id, station_id, vehicle_type, license_plate, start_time, end_time, state,"
+        " created_at, updated_at, draft_expires_at) VALUES (?, 8, 'BEV', 'X', ?, ?, 'DRAFT', 'x', 'x', 'x')",
         (user_id, row["start_time"], row["end_time"]),
     )
     try:
         conn.execute(
-            "UPDATE reservations SET state = 'CONFIRMED' WHERE id = ?", (cur.lastrowid,)
+            "UPDATE reservations SET state = 'PENDING_APPROVAL', approval_deadline = 'x' WHERE id = ?", (cur.lastrowid,)
         )
         checks["overlap blocked by DB trigger"] = False
     except sqlite3.IntegrityError as exc:

@@ -3,7 +3,7 @@
 Operace a přechody stavů:
   OP-01 Check Availability   search_availability(), availability()  stav se nemění
   OP-02 Create Reservation   create()             [none] -> DRAFT (platnost 5 min, BR-05)
-  OP-03 Confirm Reservation  confirm()            DRAFT -> CONFIRMED | PENDING_APPROVAL (výjimka pro slabší vozidlo, BR-06)
+  OP-03 Confirm Reservation  confirm()            DRAFT -> CONFIRMED (AC) | PENDING_APPROVAL (DC/HPC, BR-06)
   OP-04 Cancel Reservation   cancel()             CONFIRMED -> CANCELLED | CANCELLED_BY_ADMIN (BR-03)
                                                   PENDING_APPROVAL -> CANCELLED
   OP-05 Approve / Reject     approve(), reject()  PENDING_APPROVAL -> CONFIRMED | REJECTED
@@ -38,7 +38,7 @@ BOOKING_HORIZON_DAYS = 14
 DRAFT_TTL = timedelta(minutes=5)  # BR-05
 APPROVAL_LEAD = timedelta(minutes=15)  # BR-06: rozhodnout nejpozději T_start − 15 min
 USER_CANCEL_LEAD = timedelta(minutes=30)  # BR-03: uživatel ruší nejpozději T_start − 30 min
-FAST_STATION_KW = 50  # BR-06: DC (>= 50 kW) a HPC jsou rychlé stanice
+APPROVAL_POWER_KW = 50  # BR-06: DC (>= 50 kW) a HPC vyžadují schválení
 
 DRAFT = "DRAFT"
 PENDING_APPROVAL = "PENDING_APPROVAL"
@@ -64,12 +64,7 @@ SLOT_PAST = "PAST"
 # Důvod nedostupnosti stanice v OP-01.
 UNAVAILABLE_COLLISION = "COLLISION"
 UNAVAILABLE_PENDING = "PENDING_APPROVAL"
-UNAVAILABLE_VEHICLE = "VEHICLE"  # BR-04: PHEV na HPC
-UNAVAILABLE_NO_DC = "NO_DC"  # BR-06: vozidlo neumí DC
-
-# Připuštění vozidla na stanici (BR-06).
-ADMISSION_AUTO = "AUTO"
-ADMISSION_EXCEPTION = "EXCEPTION"
+UNAVAILABLE_VEHICLE = "VEHICLE"
 
 PLATE_MAX_LENGTH = 12
 _PLATE_RE = re.compile(r"[A-Z0-9](?:[A-Z0-9 -]*[A-Z0-9])?")
@@ -105,10 +100,9 @@ class InvalidStateError(ReservationError):
 _INTEGRITY_ERRORS = {
     "BLOCKING_OVERLAP": (ConflictError, OVERLAP_MESSAGE),
     "HIGH_SPEED_BEV_ONLY": (ReservationError, HIGH_SPEED_MESSAGE),
-    "DC_NOT_SUPPORTED": (ReservationError, "Vozidlo neumí nabíjet stejnosměrně (DC), na rychlou stanici proto nemůže."),
     "INVALID_STATE_TRANSITION": (InvalidStateError, "Tento přechod stavu rezervace není povolen."),
     "INVALID_INITIAL_STATE": (InvalidStateError, "Rezervace musí vzniknout ve stavu DRAFT."),
-    "APPROVAL_REQUIRED": (InvalidStateError, "Pro toto vozidlo a stanici platí jiný způsob potvrzení (BR-06)."),
+    "APPROVAL_REQUIRED": (InvalidStateError, "Rezervace DC/HPC stanice musí projít schválením administrátorem."),
 }
 
 
@@ -122,11 +116,9 @@ def parse_slot_start(date_str: str | None, time_str: str | None) -> datetime:
     return value
 
 
-def parse_vehicle_model_id(value) -> int:
-    if isinstance(value, str) and value.strip().isdigit():
-        value = int(value)
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ReservationError("Vyberte vozidlo z katalogu.")
+def parse_vehicle_type(value) -> str:
+    if value not in VEHICLE_TYPES:
+        raise ReservationError("Typ vozu musí být BEV nebo PHEV.")
     return value
 
 
@@ -141,38 +133,15 @@ def normalize_license_plate(value) -> str:
     return plate
 
 
-def is_fast(station) -> bool:
-    """Rychlá stanice: DC 07 a HPC 08–10 (>= 50 kW)."""
-    return station["power_kw"] >= FAST_STATION_KW
+def requires_approval(station) -> bool:
+    """BR-06: DC (>= 50 kW) a HPC stanice vyžadují schválení administrátorem."""
+    return station["power_kw"] >= APPROVAL_POWER_KW
 
 
-def min_vehicle_kw(station) -> int | None:
-    """BR-06: na rychlé stanici se automaticky připustí vozidlo, které nabíjí aspoň polovinou jejího výkonu."""
-    return (station["power_kw"] + 1) // 2 if is_fast(station) else None
-
-
-def no_dc_message(vehicle) -> str:
-    return f"{vehicle['name']} neumí nabíjet stejnosměrně (DC), na rychlou stanici proto nemůže."
-
-
-def check_vehicle_allowed(station, vehicle) -> None:
-    """BR-04: HPC jen pro BEV. BR-06: na rychlou stanici jen vozidlo s DC nabíjením."""
-    if station["is_high_speed"] and vehicle["vehicle_type"] != VEHICLE_BEV:
+def check_vehicle_allowed(station, vehicle_type: str) -> None:
+    """BR-04: HPC jen pro BEV."""
+    if station["is_high_speed"] and vehicle_type != VEHICLE_BEV:
         raise ReservationError(HIGH_SPEED_MESSAGE)
-    if is_fast(station) and vehicle["max_dc_kw"] == 0:
-        raise ReservationError(no_dc_message(vehicle))
-
-
-def admission(station, vehicle) -> str:
-    """BR-06: AC stanice a dostatečně výkonné vozidlo na rychlé stanici -> AUTO (potvrzení hned),
-    slabší vozidlo na rychlé stanici -> EXCEPTION (žádost o výjimku, schvaluje administrátor)."""
-    if is_fast(station) and vehicle["max_dc_kw"] < min_vehicle_kw(station):
-        return ADMISSION_EXCEPTION
-    return ADMISSION_AUTO
-
-
-def requires_approval(station, vehicle) -> bool:
-    return admission(station, vehicle) == ADMISSION_EXCEPTION
 
 
 @contextmanager
@@ -222,7 +191,7 @@ class ReservationService:
 
     def get_user(self, user_id: int):
         row = self.conn.execute(
-            "SELECT id, username, vehicle_model_id, is_admin FROM users WHERE id = ?", (user_id,)
+            "SELECT id, username, vehicle_type, is_admin FROM users WHERE id = ?", (user_id,)
         ).fetchone()
         if row is None:
             raise NotFoundError("Uživatel neexistuje.")
@@ -236,17 +205,6 @@ class ReservationService:
 
     def list_stations(self):
         return self.conn.execute("SELECT * FROM stations ORDER BY id").fetchall()
-
-    def list_vehicle_models(self):
-        return self.conn.execute("SELECT * FROM vehicle_models ORDER BY vehicle_type, max_dc_kw DESC, name").fetchall()
-
-    def get_vehicle_model(self, vehicle_model_id):
-        row = self.conn.execute(
-            "SELECT * FROM vehicle_models WHERE id = ?", (parse_vehicle_model_id(vehicle_model_id),)
-        ).fetchone()
-        if row is None:
-            raise NotFoundError("Model vozidla není v katalogu.")
-        return row
 
     def _get_reservation_row(self, reservation_id: int):
         row = self.conn.execute("SELECT * FROM reservations WHERE id = ?", (reservation_id,)).fetchone()
@@ -283,7 +241,6 @@ class ReservationService:
         rows = self.conn.execute(
             f"""
             SELECT r.*, s.name AS station_name, s.power_kw, s.is_high_speed, u.username,
-                   vm.name AS vehicle_name, vm.vehicle_type, vm.max_dc_kw,
                    EXISTS (
                        SELECT 1 FROM reservations c
                        WHERE c.station_id = r.station_id AND c.state IN {_BLOCKING_SQL} AND c.id <> r.id
@@ -292,7 +249,6 @@ class ReservationService:
             FROM reservations r
             JOIN stations s ON s.id = r.station_id
             JOIN users u ON u.id = r.user_id
-            JOIN vehicle_models vm ON vm.id = r.vehicle_model_id
             {where_order}
             """,
             params,
@@ -307,8 +263,7 @@ class ReservationService:
         state = res["state"]
         res["has_conflict"] = bool(res["has_conflict"])
         res["is_high_speed"] = bool(res["is_high_speed"])
-        res["min_vehicle_kw"] = min_vehicle_kw(res)
-        res["requires_approval"] = res["min_vehicle_kw"] is not None and res["max_dc_kw"] < res["min_vehicle_kw"]
+        res["requires_approval"] = res["power_kw"] >= APPROVAL_POWER_KW
         res["blocking"] = state in BLOCKING_STATES
         draft_open = state == DRAFT and now <= parse_ts(res["draft_expires_at"]) and start > now
         too_late_for_approval = res["requires_approval"] and now > start - APPROVAL_LEAD
@@ -352,55 +307,38 @@ class ReservationService:
             raise ReservationError(f"Rezervovat lze nejvýše {BOOKING_HORIZON_DAYS} dní dopředu.")
         return start + timedelta(minutes=SLOT_MINUTES * slots)
 
-    def search_availability(self, start: datetime, slots, vehicle_model_id, station_id: int | None = None) -> list[dict]:
-        """OP-01: které stanice jsou v intervalu volné a připustí vybrané vozidlo (REQ-01).
-        Nedostupná je stanice s překryvem s CONFIRMED nebo PENDING_APPROVAL (BR-02), pro PHEV každá HPC
-        (BR-04) a pro vozidlo bez DC každá rychlá stanice (BR-06). U volné stanice vrací, zda vozidlo
-        projde automaticky, nebo jen jako výjimka se schválením (BR-06)."""
+    def search_availability(self, start: datetime, slots, vehicle_type, station_id: int | None = None) -> list[dict]:
+        """OP-01: které stanice jsou v intervalu volné a kompatibilní s typem vozu (REQ-01).
+        Nedostupná je stanice s překryvem s CONFIRMED nebo PENDING_APPROVAL (BR-02 v0.2)
+        a pro PHEV každá HPC stanice (BR-04)."""
         now = self.now()
-        vehicle = self.get_vehicle_model(vehicle_model_id)
+        vehicle = parse_vehicle_type(vehicle_type)
         end = self._validate_interval(start, slots, now)
         stations = [self.get_station(station_id)] if station_id is not None else self.list_stations()
         self.expire_overdue(now)
 
         result = []
         for st in stations:
-            reason, message, mode = None, "", None
-            if st["is_high_speed"] and vehicle["vehicle_type"] != VEHICLE_BEV:
+            reason, message = None, "Volno."
+            if st["is_high_speed"] and vehicle != VEHICLE_BEV:
                 reason, message = UNAVAILABLE_VEHICLE, HIGH_SPEED_MESSAGE
-            elif is_fast(st) and vehicle["max_dc_kw"] == 0:
-                reason, message = UNAVAILABLE_NO_DC, no_dc_message(vehicle)
             else:
                 blocking = self._blocking_overlaps(st["id"], start, end)
                 if any(r["state"] == CONFIRMED for r in blocking):
                     reason, message = UNAVAILABLE_COLLISION, "Obsazeno potvrzenou rezervací."
                 elif blocking:
-                    reason, message = UNAVAILABLE_PENDING, "Blokováno žádostí, která čeká na schválení."
-            if reason is None:
-                mode = admission(st, vehicle)
-                if mode == ADMISSION_EXCEPTION:
-                    message = (
-                        f"Jen s výjimkou: {vehicle['name']} nabíjí nejvýš {vehicle['max_dc_kw']} kW, stanice potřebuje "
-                        f"aspoň {min_vehicle_kw(st)} kW. Potvrzením požádáte administrátora o schválení."
-                    )
-                elif is_fast(st):
-                    message = (
-                        f"{vehicle['name']} nabíjí až {vehicle['max_dc_kw']} kW, stanice potřebuje aspoň "
-                        f"{min_vehicle_kw(st)} kW. Rezervace platí hned po potvrzení."
-                    )
-                else:
-                    message = "Rezervace platí hned po potvrzení."
+                    reason, message = UNAVAILABLE_PENDING, "Blokováno žádostí, která čeká na schválení administrátorem."
+            if reason is None and requires_approval(st):
+                message = "Volno – potvrzení bude vyžadovat schválení administrátorem."
             result.append(
                 {
                     "station_id": st["id"],
                     "name": st["name"],
                     "power_kw": st["power_kw"],
                     "is_high_speed": bool(st["is_high_speed"]),
-                    "min_vehicle_kw": min_vehicle_kw(st),
+                    "requires_approval": requires_approval(st),
                     "available": reason is None,
                     "reason": reason,
-                    "admission": mode,
-                    "requires_approval": mode == ADMISSION_EXCEPTION,
                     "message": message,
                 }
             )
@@ -474,14 +412,12 @@ class ReservationService:
                 status, info = SLOT_PENDING, f"dnes od {future['start_time'][11:]}"
             else:
                 status, info = SLOT_FREE, ""
-            result.append(
-                {**dict(st), "is_fast": is_fast(st), "min_vehicle_kw": min_vehicle_kw(st), "status": status, "status_info": info}
-            )
+            result.append({**dict(st), "requires_approval": requires_approval(st), "status": status, "status_info": info})
         return result
 
     # ------------------------------------------------------------ operace
 
-    def create(self, user_id: int, station_id: int, start: datetime, slots, vehicle_model_id, license_plate) -> int:
+    def create(self, user_id: int, station_id: int, start: datetime, slots, vehicle_type, license_plate) -> int:
         """OP-02: zaznamená záměr jako DRAFT s platností 5 minut (BR-05). Kolize se zde
         neověřují – alokace vzniká až atomicky v OP-03."""
         now = self.now()
@@ -489,21 +425,21 @@ class ReservationService:
             self.get_user(user_id)
             station = self.get_station(station_id)
             plate = normalize_license_plate(license_plate)
-            vehicle = self.get_vehicle_model(vehicle_model_id)
+            vehicle = parse_vehicle_type(vehicle_type)
             end = self._validate_interval(start, slots, now)
             check_vehicle_allowed(station, vehicle)
             ts = format_ts(now)
             cur = self.conn.execute(
-                "INSERT INTO reservations (user_id, station_id, vehicle_model_id, license_plate, start_time, end_time,"
+                "INSERT INTO reservations (user_id, station_id, vehicle_type, license_plate, start_time, end_time,"
                 " state, created_at, updated_at, draft_expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (user_id, station_id, vehicle["id"], plate, format_dt(start), format_dt(end), DRAFT, ts, ts,
+                (user_id, station_id, vehicle, plate, format_dt(start), format_dt(end), DRAFT, ts, ts,
                  format_ts(now + DRAFT_TTL)),
             )
             reservation_id = cur.lastrowid
         return reservation_id
 
     def confirm(self, user_id: int, reservation_id: int) -> str:
-        """OP-03: DRAFT -> CONFIRMED | PENDING_APPROVAL (výjimka, BR-06). Kontrola kolize a zápis běží
+        """OP-03: DRAFT -> CONFIRMED (AC) | PENDING_APPROVAL (DC/HPC). Kontrola kolize a zápis běží
         v jedné BEGIN IMMEDIATE transakci (REQ-04), DB trigger BLOCKING_OVERLAP je pojistka."""
         now = self.now()
         self.expire_overdue(now)
@@ -519,15 +455,13 @@ class ReservationService:
             if start <= now:
                 raise InvalidStateError("Termín návrhu už začal – vytvořte novou rezervaci.")
             station = self.get_station(res["station_id"])
-            vehicle = self.get_vehicle_model(res["vehicle_model_id"])
-            check_vehicle_allowed(station, vehicle)
-            needs_approval = requires_approval(station, vehicle)
+            check_vehicle_allowed(station, res["vehicle_type"])
+            needs_approval = requires_approval(station)
             deadline = start - APPROVAL_LEAD
             if needs_approval and now > deadline:
                 raise InvalidStateError(
-                    f"{vehicle['name']} potřebuje na stanici {station['name']} výjimku a o té musí administrátor "
-                    f"rozhodnout nejpozději 15 minut před začátkem (do {deadline:%H:%M}). Na schválení už nezbývá čas, "
-                    f"zvolte pozdější termín nebo jinou stanici."
+                    f"Stanice {station['name']} vyžaduje schválení administrátorem nejpozději 15 minut před začátkem "
+                    f"(do {deadline:%H:%M}); na schválení už nezbývá čas. Zvolte pozdější termín nebo AC stanici."
                 )
             if self._blocking_overlaps(res["station_id"], start, end, exclude_id=reservation_id):
                 raise ConflictError(f"{OVERLAP_MESSAGE} Zvolte jiný čas nebo stanici.")
@@ -582,7 +516,7 @@ class ReservationService:
         return new_state
 
     def approve(self, admin_id: int, reservation_id: int) -> str:
-        """OP-05 Approve: výjimka PENDING_APPROVAL -> CONFIRMED, jen admin a jen do T_start − 15 min (BR-06).
+        """OP-05 Approve: PENDING_APPROVAL -> CONFIRMED, jen admin a jen do T_start − 15 min (BR-06).
         Stanice je blokovaná už od PENDING_APPROVAL, schválení tedy alokaci jen potvrdí (BR-02)."""
         self._decide(admin_id, reservation_id, CONFIRMED)
         self._notify("reservation_approved", self.get_reservation(reservation_id))

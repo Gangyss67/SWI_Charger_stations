@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import state, plate, station_cell, action_button %}
+{% from "_macros.html" import state, plate, station_cell, action_button, vehicle_label %}
 {% block title %}Moje rezervace{% endblock %}
 {% block content %}
 <div class="page-head">
@@ -19,12 +19,12 @@
       <td class="num">{{ r.id }}</td>
       <td>{{ station_cell(r) }}</td>
       <td class="mono">{{ r.start_time|timerange(r.end_time) }}</td>
-      <td><div class="status">{{ plate(r.license_plate) }}<small>{{ r.vehicle_name }}, {% if r.max_dc_kw %}{{ r.max_dc_kw }} kW DC{% else %}jen AC{% endif %}</small></div></td>
+      <td><div class="status">{{ plate(r.license_plate) }}<small>{{ vehicle_label(r.vehicle_type) }}</small></div></td>
       <td><div class="status">
         <span>{{ state(r.state) }}</span>
         {% if r.usage %}<span class="status-hint">{{ r.usage }}</span>{% endif %}
-        {% if r.state == 'DRAFT' and r.can_confirm %}<span class="status-hint">Potvrďte do <time>{{ r.draft_expires_at[11:] }}</time>{% if r.requires_approval %}, potvrzením požádáte o výjimku{% endif %}</span>{% endif %}
-        {% if r.confirm_blocked %}<span class="status-hint warn">Na schválení výjimky už nezbývá čas.</span>{% endif %}
+        {% if r.state == 'DRAFT' and r.can_confirm %}<span class="status-hint">Potvrďte do <time>{{ r.draft_expires_at[11:] }}</time>{% if r.requires_approval %}, potvrzením odešlete rezervaci ke schválení{% endif %}</span>{% endif %}
+        {% if r.confirm_blocked %}<span class="status-hint warn">Na schválení už nezbývá čas (15 minut před začátkem).</span>{% endif %}
         {% if r.state == 'DRAFT' and r.has_conflict %}<span class="status-hint warn">Termín je mezitím obsazený.</span>{% endif %}
         {% if r.state == 'PENDING_APPROVAL' %}<span class="status-hint">Administrátor rozhodne do <time>{{ r.approval_deadline|dmhm }}</time></span>{% endif %}
         {% if r.state == 'CONFIRMED' and not g.user.is_admin and r.user_can_cancel %}<span class="status-hint">Zrušit můžete do <time>{{ r.user_cancel_until|dmhm }}</time></span>{% endif %}
