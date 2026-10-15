@@ -1,0 +1,22 @@
+@startuml
+title C05 - confirm()
+actor Uzivatel
+participant ReservationService as svc
+participant ConfirmationPolicy as cp
+participant AvailabilityPolicy as ap
+database DB
+
+Uzivatel -> svc : confirm(id)
+svc -> DB : načti rezervaci a stanici
+svc -> cp : decide(...)
+cp --> svc : rozhodnutí
+svc -> DB : načti blokující rezervace
+svc -> ap : evaluate(...)
+ap --> svc : AVAILABLE / CONFLICT
+alt REJECT nebo CONFLICT
+  svc --> Uzivatel : chyba (403 / 409)
+else ok
+  svc -> DB : UPDATE state (+ approval_deadline)
+  svc --> Uzivatel : CONFIRMED / PENDING_APPROVAL
+end
+@enduml
