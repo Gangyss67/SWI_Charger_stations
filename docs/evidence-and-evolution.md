@@ -159,3 +159,61 @@ Remaining uncertainty / risk:
 
 Commit/tag:
 - větev `c02-baseline-v0.2`, commit `9f9a70c`, tag `v0.3.0`
+
+---
+
+# CV5 (C05)
+
+## C05 DD Verification Evidence
+
+Tests derived from DD:
+
+| DD element | What must hold | Test level | Test case |
+| --- | --- | --- | --- |
+| kontrakt `decide()` | AC návrh → CONFIRMED, bez lhůty | unit | `test_contract_ac_draft_is_confirmed_without_deadline` |
+| větev DC/HPC | PENDING_APPROVAL a lhůta = start − 15 min | unit | `test_branch_dc_hpc_requests_approval_with_deadline_start_minus_15` |
+| hranice lhůty schválení | v 09:45 ještě projde, v 09:45:01 už REJECT (TOO_LATE_FOR_APPROVAL) | unit | `test_branch_approval_deadline_boundary` |
+| failure behavior | každá chyba má svůj důvod, vlastník se kontroluje jako první | unit | `test_failure_behavior_returns_defined_reason` |
+| rozhodovací tabulka `evaluate()` | 4 řádky tabulky, navazující rezervace nekolidují | unit | `test_availability_decision_table` |
+| přechod stavu | služba uloží PENDING_APPROVAL i `approval_deadline` | component | `test_state_transition_service_persists_policy_decision` |
+| spolupráce služba ↔ policy | služba se řídí výsledkem policy, při odmítnutí zůstane DRAFT | component | `test_collaboration_service_uses_injected_policies` |
+| OP-01 a OP-03 rozhodují stejně | co hledání ukáže jako obsazené, potvrzení odmítne | component | `test_collaboration_op01_and_op03_decide_the_same_way` |
+| jedna transakce (REQ-04) | z 10 souběžných potvrzení projde jedno | component | `test_op03_req04_concurrent_confirms_allow_exactly_one` (už z C02) |
+
+Proč zrovna tahle úroveň:
+- `test_branch_approval_deadline_boundary` je unit test. Hranice je jen výpočet v policy (start − 15 min proti `now`), takže stačí slovník s rezervací a čas, DB ani hodiny nepotřebujeme.
+- `test_collaboration_op01_and_op03_decide_the_same_way` je komponentový. Chyba by tu byla ve spolupráci: hledání i potvrzení si musí z DB načíst stejné blokující rezervace a poslat je do policy. Unit test samotné policy by to nezachytil.
+
+Unit/component tests executed:
+- `python -m pytest tests/test_confirmation_design.py` → 22 passed
+- `python -m pytest` → 99 passed (77 z C03 + 22 nových, staré testy jsme neměnili)
+- `scripts/verify_c02.py` → 14/14 OK
+
+Design ↔ implementation mismatch:
+
+DD jsme porovnávali s kódem z C03 (tag `v0.3.0`).
+
+| DD decision | Implemented? | Evidence | Action |
+| --- | --- | --- | --- |
+| rozhodnutí o potvrzení má jednoho vlastníka (`ConfirmationPolicy`) | NO | pravidla byla přímo v `confirm()` a ještě jednou v `_decorate()` (jestli ukázat tlačítko Potvrdit) | update code |
+| OP-01 a OP-03 vyhodnocují konflikt stejně (`AvailabilityPolicy`) | PARTLY | SQL `_blocking_overlaps()` bylo společné, ale vyhodnocení (vůz, CONFIRMED vs PENDING) bylo napsané zvlášť v `search_availability()` a v `confirm()` | update code |
+| BR-05 (5 min) kontroluje samo rozhodnutí | PARTLY | `confirm()` spoléhal na to, že `expire_overdue()` předtím přepne starý DRAFT na EXPIRED | update code |
+| pořadí: nejdřív pravidla rezervace, pak vůz a konflikt | PARTLY | BR-04 se kontrolovalo dřív než lhůta schválení | update code |
+| stav rezervace mění jen `ReservationService`, čas jde přes `clock` | YES | `UPDATE reservations` je jen v `services/reservations.py` (kromě spike skriptu z C01), testy mají pevné hodiny | keep |
+| kontrola a zápis v jedné transakci, trigger jako pojistka | YES | `_atomic()` / `BEGIN IMMEDIATE`, trigger `trg_reservations_no_overlap`, test souběhu | keep |
+| SQL v samostatné repository vrstvě | NO | SQL je v `ReservationService` | update DD (necháno kódu, viz „DD decisions intentionally left to code“) |
+
+Resolution:
+- nové `services/domain.py` (stavy, BR-04, BR-06) a `services/policies.py` (`ConfirmationPolicy`, `AvailabilityPolicy`, `ConfirmationDecision`),
+- `confirm()` teď jen načte data, zavolá obě policy a zapíše výsledek. `search_availability()` používá stejnou `AvailabilityPolicy`, `_decorate()` stejnou `ConfirmationPolicy`,
+- policy jdou do `ReservationService` předat v konstruktoru (využívá to test spolupráce),
+- hlášky pro uživatele zůstaly stejné, takže se nemusely měnit ani staré testy, ani `verify_c02.py`.
+
+Remaining design risk:
+- propadání je pořád „líné“ (`expire_overdue()` při requestu), stejné riziko jako v C03,
+- rezervace a stanice jsou v policy jen slovníky / `sqlite3.Row`, překlep v názvu sloupce se ukáže až za běhu,
+- DB triggery opakují část pravidel z policy, při změně pravidla se musí upravit obě místa,
+- SQLite pustí jen jeden zápis najednou, při větší zátěži to může brzdit (neměřili jsme).
+
+Commit/tag:
+- větev `c05-detailed-design`, commit `b6cdfd4`, tag `v0.5.0`

@@ -11,6 +11,9 @@ Operace a přechody stavů:
 
 Události pro Notification Service se zapisují do tabulky outbox ve stejné transakci jako změna
 stavu (ADR-01). Doručuje je services/outbox.py – tato služba Notification Service vůbec nezná.
+
+Rozhodnutí o potvrzení (C05) dělají čisté třídy v services/policies.py: AvailabilityPolicy
+(kompatibilita vozu a konflikt) a ConfirmationPolicy (vlastník, stav, platnost návrhu, schvalování).
 """
 from __future__ import annotations
 
@@ -22,6 +25,37 @@ from datetime import date, datetime, time, timedelta
 from typing import Callable
 
 from ..db import transaction
+from .domain import (  # VEHICLE_* a stavy importují odsud i views.py a auth.py
+    BLOCKING_STATES,
+    CANCELLED,
+    CANCELLED_BY_ADMIN,
+    CONFIRMED,
+    DRAFT,
+    EXPIRED,
+    PENDING_APPROVAL,
+    REJECTED,
+    STATES,
+    VEHICLE_BEV,
+    VEHICLE_PHEV,
+    VEHICLE_TYPES,
+    requires_approval,
+    vehicle_allowed,
+)
+from .policies import (
+    ALREADY_STARTED,
+    AVAILABLE,
+    CONFLICT_CONFIRMED,
+    CONFLICT_PENDING,
+    DRAFT_EXPIRED,
+    NOT_DRAFT,
+    NOT_OWNER,
+    REJECT,
+    TOO_LATE_FOR_APPROVAL,
+    VEHICLE_NOT_ALLOWED,
+    AvailabilityPolicy,
+    ConfirmationDecision,
+    ConfirmationPolicy,
+)
 from ..timeutil import (
     SLOT_MINUTES,
     SLOTS_PER_DAY,
@@ -37,24 +71,8 @@ MAX_SLOTS = 8  # max. 4 hodiny
 BOOKING_HORIZON_DAYS = 14
 
 DRAFT_TTL = timedelta(minutes=5)  # BR-05
-APPROVAL_LEAD = timedelta(minutes=15)  # BR-06: rozhodnout nejpozději T_start − 15 min
 USER_CANCEL_LEAD = timedelta(minutes=30)  # BR-03: uživatel ruší nejpozději T_start − 30 min
-APPROVAL_POWER_KW = 50  # BR-06: DC (>= 50 kW) a HPC vyžadují schválení
-
-DRAFT = "DRAFT"
-PENDING_APPROVAL = "PENDING_APPROVAL"
-CONFIRMED = "CONFIRMED"
-CANCELLED = "CANCELLED"
-CANCELLED_BY_ADMIN = "CANCELLED_BY_ADMIN"
-REJECTED = "REJECTED"
-EXPIRED = "EXPIRED"
-STATES = (DRAFT, PENDING_APPROVAL, CONFIRMED, CANCELLED, CANCELLED_BY_ADMIN, REJECTED, EXPIRED)
-BLOCKING_STATES = (CONFIRMED, PENDING_APPROVAL)  # BR-02 v0.2
 _BLOCKING_SQL = "('CONFIRMED', 'PENDING_APPROVAL')"
-
-VEHICLE_BEV = "BEV"
-VEHICLE_PHEV = "PHEV"
-VEHICLE_TYPES = (VEHICLE_BEV, VEHICLE_PHEV)
 
 SLOT_FREE = "FREE"
 SLOT_RESERVED = "RESERVED"
@@ -134,15 +152,21 @@ def normalize_license_plate(value) -> str:
     return plate
 
 
-def requires_approval(station) -> bool:
-    """BR-06: DC (>= 50 kW) a HPC stanice vyžadují schválení administrátorem."""
-    return station["power_kw"] >= APPROVAL_POWER_KW
-
-
 def check_vehicle_allowed(station, vehicle_type: str) -> None:
-    """BR-04: HPC jen pro BEV."""
-    if station["is_high_speed"] and vehicle_type != VEHICLE_BEV:
+    """BR-04: HPC jen pro BEV (pravidlo samotné je v domain.vehicle_allowed)."""
+    if not vehicle_allowed(station, vehicle_type):
         raise ReservationError(HIGH_SPEED_MESSAGE)
+
+
+_CONFIRMATION_RULES = ConfirmationPolicy()  # pro příznak can_confirm v _decorate()
+
+# Výsledek AvailabilityPolicy -> (důvod v OP-01, text)
+_AVAILABILITY_TEXT = {
+    AVAILABLE: (None, "Volno."),
+    VEHICLE_NOT_ALLOWED: (UNAVAILABLE_VEHICLE, HIGH_SPEED_MESSAGE),
+    CONFLICT_CONFIRMED: (UNAVAILABLE_COLLISION, "Obsazeno potvrzenou rezervací."),
+    CONFLICT_PENDING: (UNAVAILABLE_PENDING, "Blokováno žádostí, která čeká na schválení administrátorem."),
+}
 
 
 @contextmanager
@@ -159,9 +183,17 @@ def _atomic(conn: sqlite3.Connection):
 
 
 class ReservationService:
-    def __init__(self, conn: sqlite3.Connection, clock: Callable[[], datetime] = datetime.now):
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        clock: Callable[[], datetime] = datetime.now,
+        confirmation_policy: ConfirmationPolicy | None = None,
+        availability_policy: AvailabilityPolicy | None = None,
+    ):
         self.conn = conn
         self.clock = clock
+        self.confirmation_policy = confirmation_policy or ConfirmationPolicy()
+        self.availability_policy = availability_policy or AvailabilityPolicy()
 
     def now(self) -> datetime:
         return self.clock()
@@ -263,13 +295,13 @@ class ReservationService:
         state = res["state"]
         res["has_conflict"] = bool(res["has_conflict"])
         res["is_high_speed"] = bool(res["is_high_speed"])
-        res["requires_approval"] = res["power_kw"] >= APPROVAL_POWER_KW
+        res["requires_approval"] = requires_approval(res)
         res["blocking"] = state in BLOCKING_STATES
-        draft_open = state == DRAFT and now <= parse_ts(res["draft_expires_at"]) and start > now
-        too_late_for_approval = res["requires_approval"] and now > start - APPROVAL_LEAD
-        res["can_confirm"] = draft_open and not too_late_for_approval
+        # tlačítko „Potvrdit“ řídí stejná ConfirmationPolicy jako OP-03 (C05) – pravidla nejsou zkopírovaná
+        decision = _CONFIRMATION_RULES.decide(res, res, res["user_id"], now)
+        res["can_confirm"] = decision.outcome != REJECT
         res["confirm_blocked"] = (
-            "Na schválení už nezbývá čas (T_start − 15 min)." if draft_open and too_late_for_approval else ""
+            "Na schválení už nezbývá čas (T_start − 15 min)." if decision.reason == TOO_LATE_FOR_APPROVAL else ""
         )
         res["user_cancel_until"] = format_dt(start - USER_CANCEL_LEAD)
         res["user_can_cancel"] = state == PENDING_APPROVAL or (state == CONFIRMED and now <= start - USER_CANCEL_LEAD)
@@ -319,15 +351,10 @@ class ReservationService:
 
         result = []
         for st in stations:
-            reason, message = None, "Volno."
-            if st["is_high_speed"] and vehicle != VEHICLE_BEV:
-                reason, message = UNAVAILABLE_VEHICLE, HIGH_SPEED_MESSAGE
-            else:
-                blocking = self._blocking_overlaps(st["id"], start, end)
-                if any(r["state"] == CONFIRMED for r in blocking):
-                    reason, message = UNAVAILABLE_COLLISION, "Obsazeno potvrzenou rezervací."
-                elif blocking:
-                    reason, message = UNAVAILABLE_PENDING, "Blokováno žádostí, která čeká na schválení administrátorem."
+            status = self.availability_policy.evaluate(
+                st, vehicle, start, end, self._blocking_overlaps(st["id"], start, end)
+            )
+            reason, message = _AVAILABILITY_TEXT[status]
             if reason is None and requires_approval(st):
                 message = "Volno – potvrzení bude vyžadovat schválení administrátorem."
             result.append(
@@ -439,42 +466,55 @@ class ReservationService:
         return reservation_id
 
     def confirm(self, user_id: int, reservation_id: int) -> str:
-        """OP-03: DRAFT -> CONFIRMED (AC) | PENDING_APPROVAL (DC/HPC). Kontrola kolize a zápis běží
-        v jedné BEGIN IMMEDIATE transakci (REQ-04), DB trigger BLOCKING_OVERLAP je pojistka."""
+        """OP-03: DRAFT -> CONFIRMED (AC) | PENDING_APPROVAL (DC/HPC).
+        Orchestrace (C05): propadlé návrhy -> transakce -> načtení -> ConfirmationPolicy (pravidla rezervace)
+        -> AvailabilityPolicy (vůz + konflikt) -> zápis rozhodnutí. Kontrola kolize a zápis běží v jedné
+        BEGIN IMMEDIATE transakci (REQ-04), DB trigger BLOCKING_OVERLAP je pojistka."""
         now = self.now()
         self.expire_overdue(now)
         with _atomic(self.conn):
             res = self._get_reservation_row(reservation_id)
-            if res["user_id"] != user_id:
-                raise PermissionDeniedError("Potvrdit lze pouze vlastní rezervaci.")
-            if res["state"] == EXPIRED and res["approval_deadline"] is None:
-                raise InvalidStateError("Návrh rezervace vypršel (platnost 5 minut) – vytvořte nový.")
-            if res["state"] != DRAFT:
-                raise InvalidStateError(f"Potvrdit lze pouze návrh ve stavu DRAFT (rezervace je {res['state']}).")
-            start, end = parse_dt(res["start_time"]), parse_dt(res["end_time"])
-            if start <= now:
-                raise InvalidStateError("Termín návrhu už začal – vytvořte novou rezervaci.")
             station = self.get_station(res["station_id"])
-            check_vehicle_allowed(station, res["vehicle_type"])
-            needs_approval = requires_approval(station)
-            deadline = start - APPROVAL_LEAD
-            if needs_approval and now > deadline:
-                raise InvalidStateError(
-                    f"Stanice {station['name']} vyžaduje schválení administrátorem nejpozději 15 minut před začátkem "
-                    f"(do {deadline:%H:%M}); na schválení už nezbývá čas. Zvolte pozdější termín nebo AC stanici."
-                )
-            if self._blocking_overlaps(res["station_id"], start, end, exclude_id=reservation_id):
+            decision = self.confirmation_policy.decide(res, station, user_id, now)
+            if decision.outcome == REJECT:
+                raise self._confirmation_error(decision, res, station)
+            start, end = parse_dt(res["start_time"]), parse_dt(res["end_time"])
+            blocking = self._blocking_overlaps(res["station_id"], start, end, exclude_id=reservation_id)
+            status = self.availability_policy.evaluate(station, res["vehicle_type"], start, end, blocking)
+            if status == VEHICLE_NOT_ALLOWED:
+                raise ReservationError(HIGH_SPEED_MESSAGE)
+            if status != AVAILABLE:
                 raise ConflictError(f"{OVERLAP_MESSAGE} Zvolte jiný čas nebo stanici.")
-            if needs_approval:
-                new_state = PENDING_APPROVAL
-                self.conn.execute(
-                    "UPDATE reservations SET state = ?, approval_deadline = ?, updated_at = ? WHERE id = ?",
-                    (PENDING_APPROVAL, format_ts(deadline), format_ts(now), reservation_id),
-                )
-            else:
-                new_state = CONFIRMED
-                self._set_state(reservation_id, CONFIRMED, now)
-        return new_state
+            self._apply_confirmation(reservation_id, decision, now)
+        return decision.target_state
+
+    @staticmethod
+    def _confirmation_error(decision: ConfirmationDecision, res, station) -> ReservationError:
+        """Důvod odmítnutí z ConfirmationPolicy -> doménová výjimka (a HTTP kód ve views)."""
+        if decision.reason == NOT_OWNER:
+            return PermissionDeniedError("Potvrdit lze pouze vlastní rezervaci.")
+        if decision.reason == DRAFT_EXPIRED:
+            return InvalidStateError("Návrh rezervace vypršel (platnost 5 minut) – vytvořte nový.")
+        if decision.reason == NOT_DRAFT:
+            return InvalidStateError(f"Potvrdit lze pouze návrh ve stavu DRAFT (rezervace je {res['state']}).")
+        if decision.reason == ALREADY_STARTED:
+            return InvalidStateError("Termín návrhu už začal – vytvořte novou rezervaci.")
+        if decision.reason == TOO_LATE_FOR_APPROVAL:
+            return InvalidStateError(
+                f"Stanice {station['name']} vyžaduje schválení administrátorem nejpozději 15 minut před začátkem "
+                f"(do {decision.approval_deadline:%H:%M}); na schválení už nezbývá čas. Zvolte pozdější termín nebo AC stanici."
+            )
+        raise ValueError(f"Neznámý důvod odmítnutí {decision.reason}")
+
+    def _apply_confirmation(self, reservation_id: int, decision: ConfirmationDecision, now: datetime) -> None:
+        """Zapíše rozhodnutí ConfirmationPolicy (uvnitř transakce confirm())."""
+        if decision.target_state == PENDING_APPROVAL:
+            self.conn.execute(
+                "UPDATE reservations SET state = ?, approval_deadline = ?, updated_at = ? WHERE id = ?",
+                (PENDING_APPROVAL, format_ts(decision.approval_deadline), format_ts(now), reservation_id),
+            )
+        else:
+            self._set_state(reservation_id, CONFIRMED, now)
 
     def cancel(self, actor_id: int, reservation_id: int) -> str:
         """OP-04 (BR-03): uživatel ruší CONFIRMED nejpozději T_start − 30 min -> CANCELLED,

@@ -346,3 +346,122 @@ Rezervace v kódu není třída, je to řádek tabulky `reservations` (v diagram
 **Kontrola:** `tests/test_architecture.py` (pustí se s ostatními testy). Přes `ast` projde zdrojáky a ověří, že `services/reservations.py` neimportuje `notifications` ani `outbox` a nepoužívá `notifier`, a že metody událostí (`reservation_approved`, `slot_released`, …) volá jen `services/outbox.py`.
 
 **Výsledek:** 2 passed. Zkusili jsme i opak: když jsme do `services/reservations.py` dočasně přidali `from .notifications import NotificationService`, test spadl (`1 failed`), po vrácení zase prošel.
+
+---
+
+# CV5 (C05)
+
+## C05 Detailed Design
+
+### Selected architecture unit
+
+**Potvrzení rezervace (OP-03)** – kus prvku Reservation Management z C03. Rozhoduje, jestli jde návrh (DRAFT) potvrdit a do jakého stavu přejde: AC stanice → CONFIRMED, DC/HPC → PENDING_APPROVAL (tím začíná schvalování z C03).
+
+- požadavky: REQ-03, REQ-04 (OP-03), REQ-01 (hledání OP-01 používá stejnou kontrolu dostupnosti)
+- pravidla: BR-01, BR-02, BR-04, BR-05, BR-06
+- mimo tuhle jednotku: web a přihlášení (`views.py`, `auth.py`), schválení adminem (OP-05), notifikace (outbox z C03), propadání návrhů (`expire_overdue()`)
+
+### Detailed responsibilities
+
+| Odpovědnost | Proč |
+| --- | --- |
+| zkontrolovat, že potvrzuje vlastník | potvrdit smí jen ten, kdo návrh vytvořil |
+| zkontrolovat stav a platnost návrhu | potvrdit jde jen DRAFT, který není starší než 5 min (BR-05), a termín ještě nezačal |
+| rozhodnout cílový stav | AC → CONFIRMED, DC/HPC → PENDING_APPROVAL (BR-06) |
+| spočítat lhůtu schválení | admin musí rozhodnout do T_start − 15 min. Když už na to není čas, žádost vůbec nevznikne |
+| zkontrolovat vůz | PHEV nesmí na HPC (BR-04) |
+| zkontrolovat konflikt | BR-02, musí vyjít stejně jako u hledání (OP-01) |
+| uložit výsledek v jedné transakci | REQ-04, při souběhu projde jen jeden |
+
+### Design elements and ownership
+
+| Responsibility | Owner | State/data | Why here? |
+| --- | --- | --- | --- |
+| vlastník, stav a platnost návrhu, cílový stav, lhůta schválení | `ConfirmationPolicy` (`services/policies.py`) | dostane řádek rezervace, stanici a aktuální čas | pravidla jsou na jednom místě a jdou testovat bez DB |
+| vůz + konflikt s jinými rezervacemi | `AvailabilityPolicy` (`services/policies.py`) | stanice, typ vozu, interval, blokující rezervace | používá ji OP-01 i OP-03, takže rozhodnou stejně |
+| výsledek rozhodnutí | `ConfirmationDecision` | outcome, target_state, approval_deadline, reason | policy nehází výjimky, jen vrátí výsledek |
+| stavy, BR-04, BR-06 (50 kW, 15 min) | `services/domain.py` | konstanty, `vehicle_allowed()`, `requires_approval()` | pravidlo je definované jednou |
+| průběh OP-03, transakce, čtení a zápis | `ReservationService.confirm()` | spojení na DB | stav rezervace mění jen služba (z C03) |
+| pojistka BR-02 a přechodů | DB triggery (`schema.sql`) | tabulka `reservations` | chytí i chybu v kódu |
+
+### Key interface(s) / contract(s)
+
+**`ConfirmationPolicy.decide(reservation, station, requester_id, now) -> ConfirmationDecision`**
+
+- Preconditions: `reservation` je aktuální řádek z DB, `station` je její stanice, `now` dodá volající (policy sama hodiny nečte).
+- Postconditions:
+  - AC → `CONFIRM`, cílový stav CONFIRMED,
+  - DC/HPC → `REQUEST_APPROVAL`, cílový stav PENDING_APPROVAL a `approval_deadline = start − 15 min`,
+  - jinak `REJECT` a vyplněný `reason`.
+- Failures (`reason`): NOT_OWNER, DRAFT_EXPIRED, NOT_DRAFT, ALREADY_STARTED, TOO_LATE_FOR_APPROVAL.
+- Side effects: žádné, do DB nesahá.
+
+**`AvailabilityPolicy.evaluate(station, vehicle_type, start, end, blocking) -> status`**
+
+- Preconditions: `start < end`, `blocking` jsou rezervace stejné stanice ve stavu CONFIRMED nebo PENDING_APPROVAL.
+- Postconditions: vrátí právě jedno z AVAILABLE, VEHICLE_NOT_ALLOWED, CONFLICT_CONFIRMED, CONFLICT_PENDING.
+- Side effects: žádné.
+
+Služba to pak přeloží na chyby: NOT_OWNER → 403, ostatní REJECT a konflikty → 409, VEHICLE_NOT_ALLOWED → 400.
+
+### Focused structural view
+
+![C05 structural view](diagrams/c05_structure.png)
+
+Služba volá dvě policy, `ConfirmationPolicy` vrací `ConfirmationDecision`. Do DB sahá jen `ReservationService`. Zdroj: [diagrams/c05_structure.puml](diagrams/c05_structure.puml).
+
+### Detailed sequence
+
+![C05 detailed sequence](diagrams/c05_sequence.png)
+
+V C03 byla sekvence jen Web → Reservation Management → DB, tady je rozepsané, co se děje uvnitř. Celé to běží v jedné transakci `BEGIN IMMEDIATE`, takže při chybě se nic neuloží. Zdroj: [diagrams/c05_sequence.puml](diagrams/c05_sequence.puml).
+
+### Important methods / operations
+
+| | `ReservationService.confirm()` | `ConfirmationPolicy.decide()` | `AvailabilityPolicy.evaluate()` |
+| --- | --- | --- | --- |
+| Responsibility | provede celé OP-03 | rozhodne podle pravidel rezervace | rozhodne, jestli je stanice pro vůz volná |
+| Input | `user_id`, `reservation_id` | rezervace, stanice, `requester_id`, `now` | stanice, typ vozu, `start`, `end`, blokující rezervace |
+| Output | nový stav (CONFIRMED / PENDING_APPROVAL) | `ConfirmationDecision` | AVAILABLE / VEHICLE_NOT_ALLOWED / CONFLICT_CONFIRMED / CONFLICT_PENDING |
+| Preconditions | rezervace existuje | viz kontrakt | `start < end` |
+| Postconditions | stav je uložený, nebo výjimka a nic se nezměnilo | viz kontrakt | jeden výsledek |
+| Side effects | propadlé návrhy → EXPIRED, `UPDATE` stavu | žádné | žádné |
+| Failure behavior | `PermissionDeniedError`, `InvalidStateError`, `ConflictError`, `ReservationError` + ROLLBACK | `REJECT` + důvod | vrátí výsledek, nehází výjimky |
+
+Pomocné metody `_apply_confirmation()` (zapíše rozhodnutí) a `_confirmation_error()` (důvod → výjimka) nepopisujeme zvlášť.
+
+### Algorithm / decision logic
+
+`ConfirmationPolicy.decide()` – kontroluje se popořadě, první, co neprojde, rozhoduje:
+
+```
+if rezervace.user_id != requester_id:          REJECT(NOT_OWNER)
+if stav == EXPIRED a nemá approval_deadline:   REJECT(DRAFT_EXPIRED)
+if stav != DRAFT:                              REJECT(NOT_DRAFT)
+if now > draft_expires_at:                     REJECT(DRAFT_EXPIRED)        # BR-05
+if start <= now:                               REJECT(ALREADY_STARTED)
+if stanice má >= 50 kW:                                                     # BR-06
+    deadline = start - 15 min
+    if now > deadline:                         REJECT(TOO_LATE_FOR_APPROVAL)
+    jinak                                      REQUEST_APPROVAL(PENDING_APPROVAL, deadline)
+jinak                                          CONFIRM(CONFIRMED)
+```
+
+`AvailabilityPolicy.evaluate()`:
+
+| Vůz smí na stanici (BR-04) | Překryv s CONFIRMED | Překryv s PENDING_APPROVAL | Výsledek |
+| --- | --- | --- | --- |
+| ne | – | – | VEHICLE_NOT_ALLOWED |
+| ano | ano | – | CONFLICT_CONFIRMED |
+| ano | ne | ano | CONFLICT_PENDING |
+| ano | ne | ne | AVAILABLE |
+
+Překryv počítáme jako `r.start < end and start < r.end`, takže rezervace, které na sebe jen navazují, nekolidují (BR-01).
+
+### DD decisions intentionally left to code
+
+- texty chybových hlášek a HTTP kódy (`_confirmation_error()`, `views.py`),
+- SQL dotaz na blokující rezervace (`_blocking_overlaps()`) – jen vybere kandidáty, o konfliktu rozhoduje policy,
+- jak `expire_overdue()` přepíná propadlé rezervace (zůstává z C02),
+- formát časů a převody (`parse_dt`, `format_ts`),
+- repository vrstvu neděláme, SQL zůstává v `ReservationService` (malá appka, jedna DB).

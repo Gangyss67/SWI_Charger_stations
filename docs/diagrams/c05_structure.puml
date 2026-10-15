@@ -1,0 +1,29 @@
+@startuml
+hide empty members
+title C05 - Confirmation decision
+
+class ReservationService {
+  +confirm(user_id, reservation_id)
+}
+class ConfirmationPolicy {
+  +decide(reservation, station, user_id, now)
+}
+class AvailabilityPolicy {
+  +evaluate(station, vehicle_type, start, end, blocking)
+}
+class ConfirmationDecision {
+  outcome
+  target_state
+  approval_deadline
+  reason
+}
+class "reservations (DB)" as db {
+  state
+  approval_deadline
+}
+
+ReservationService --> ConfirmationPolicy
+ReservationService --> AvailabilityPolicy
+ConfirmationPolicy --> ConfirmationDecision
+ReservationService --> db : čte / zapisuje
+@enduml

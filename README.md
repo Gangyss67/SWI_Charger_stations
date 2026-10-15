@@ -122,12 +122,14 @@ src/charging/
   db.py                         připojení, transakce, seed dat
   auth.py, security.py          přihlášení/registrace, CSRF
   views.py                      stránky + JSON API
-  services/reservations.py      doménová logika (stavy, pravidla, dostupnost)
+  services/reservations.py      ReservationService – operace OP-01..OP-05, transakce
+  services/domain.py            stavy, typy vozů, BR-04 a BR-06
+  services/policies.py          C05 – rozhodnutí o potvrzení a dostupnosti (bez DB)
   services/notifications.py     Notification Service (boundary)
   services/outbox.py            doručování událostí z outboxu (ADR-01)
   templates/, static/
 scripts/spike_persistence.py    C01 spike A – persistence
 scripts/verify_c02.py           C02 – příklady ověření baseline v0.2 přes HTTP
 scripts/dispatch_notifications.py  C03 – opakované doručení notifikací z outboxu
-tests/                          pytest testy (test_architecture.py = pravidlo z ADR-01)
+tests/                          pytest testy (test_architecture.py = pravidlo z ADR-01, test_confirmation_design.py = C05)
 ```
