@@ -216,4 +216,4 @@ Remaining design risk:
 - SQLite pustí jen jeden zápis najednou, při větší zátěži to může brzdit (neměřili jsme).
 
 Commit/tag:
-- větev `c05-detailed-design`, commit `COMMIT_HASH`, tag `v0.5.0`
+- větev `c05-detailed-design`, commit `b6cdfd4`, tag `v0.5.0`
