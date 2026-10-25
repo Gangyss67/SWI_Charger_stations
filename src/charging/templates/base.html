@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}Parkoviště{% endblock %} · ChargeBook</title>
+  <title>{% block title %}Parkoviště{% endblock %} · VoltBook</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
@@ -12,9 +12,9 @@
 <body>
 <header class="topbar">
   <div class="wrap topbar-inner">
-    <a class="brand" href="{{ url_for('main.index') }}" aria-label="ChargeBook – parkoviště">
+    <a class="brand" href="{{ url_for('main.index') }}" aria-label="VoltBook – parkoviště">
       <span class="brand-sign" aria-hidden="true">P</span>
-      <span class="brand-name">ChargeBook</span>
+      <span class="brand-name">VoltBook</span>
     </a>
     <nav class="nav">
       <a href="{{ url_for('main.index') }}"{% if request.endpoint in ('main.index', 'main.station_detail') %} aria-current="page"{% endif %}>Parkoviště</a>

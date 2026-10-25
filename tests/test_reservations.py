@@ -1,4 +1,4 @@
-"""Testy doménové logiky podle specifikace baseline v0.2 (cv2.docx).
+"""Testy doménové logiky podle specifikace baseline v0.2 (docs/specification.md).
 
 Každá operace OP-01..OP-05 má testy pojmenované podle příkladů ověření ze specifikace;
 "teď" je 15.09.2026 08:00 (viz conftest.clock).
@@ -397,6 +397,24 @@ def test_op04_rejects_draft_terminal_states_and_foreign_user(svc, users, clock):
     svc.reject(users["admin"], r)
     with pytest.raises(InvalidStateError):
         svc.cancel(users["ev"], r)
+
+
+def test_op04_v02_withdraw_and_admin_decision_see_state_left_by_the_other(svc, conn, users, clock):
+    """Souběh OP-04 × OP-05 nad stejnou žádostí: operace proběhnou jedna po druhé
+    a druhá se vyhodnotí podle stavu, který nechala první."""
+    withdrawn = pending(svc, users, "ev", HPC08, at(10), 1)
+    approved = pending(svc, users, "ev", HPC09, at(10), 1)
+    clock.value = at(9, 40)
+    # nejdřív stažení -> rozhodnutí admina se odmítne
+    svc.cancel(users["ev"], withdrawn)
+    with pytest.raises(InvalidStateError, match="PENDING_APPROVAL"):
+        svc.approve(users["admin"], withdrawn)
+    assert state(conn, withdrawn) == CANCELLED
+    # nejdřív schválení -> zrušení už platí pro CONFIRMED (30 min předem)
+    svc.approve(users["admin"], approved)
+    with pytest.raises(InvalidStateError, match="Storno limit"):
+        svc.cancel(users["ev"], approved)
+    assert state(conn, approved) == CONFIRMED
 
 
 # ------------------------------------------------------------------ OP-05 Approve / Reject

@@ -1,7 +1,11 @@
-# SWI_Charger_stations
-Toto je naše testovací repo do předmětu SWI. Výsledkem je funkční rezervační systém na fiktivní nabíjecí stanice.
+# VoltBook
+Toto je naše týmové repo do předmětu SWI. Výsledkem je funkční rezervační systém na fiktivní nabíjecí stanice.
 
-Webová aplikace pro rezervaci 10 nabíjecích stanic (z toho 3 vysokorychlostní jen pro plně elektrické vozy) po 30minutových slotech, s přihlašováním uživatelů, schvalováním rezervací rychlých stanic a in-app notifikacemi. Aplikace odpovídá **specifikaci baseline v0.2** (cv2, změna C02).
+**Projekt:** VoltBook
+**Tým:** Jan Staněk, Dominik Volný, Šimon Exner
+**Repozitář:** <https://github.com/Gangyss67/SWI_Charger_stations>
+
+Webová aplikace pro rezervaci 10 nabíjecích stanic (z toho 3 vysokorychlostní jen pro plně elektrické vozy) po 30minutových slotech, s přihlašováním uživatelů, schvalováním rezervací rychlých stanic a in-app notifikacemi. Aplikace odpovídá **specifikaci baseline v0.2** ([docs/specification.md](docs/specification.md), změna C02).
 
 ## Stack
 
@@ -112,10 +116,12 @@ Spuštění jen těchto testů:
 README.md
 requirements.txt, pytest.ini, run.py
 docs/
-  intent-and-change.md          Project Frame + future pressure
-  architecture-and-decisions.md architektura a rozhodnutí
-  evidence-and-evolution.md     evidence C01 (spike) a C02 (specifikace → běžící aplikace)
-  diagrams/                     stavový, use case a aktivitní diagramy v0.2 (PlantUML + PNG)
+  intent-and-change.md          Project Frame + future pressure (C01)
+  specification.md              specifikace OP-01..OP-05, BR-01..BR-06, baseline v0.1 a v0.2 (C02)
+  architecture-and-decisions.md rozhodnutí, architektura (C03) a detailní návrh (C05)
+  evidence-and-evolution.md     evidence C01 (spike), C02, C03 a C05
+  diagrams/                     use case, stavové a aktivitní diagramy v0.1/v0.2 (C02),
+                                diagramy architektury c03_* a detailního návrhu c05_* (PlantUML + PNG)
 src/charging/
   __init__.py                   app factory
   schema.sql                    tabulky, CHECK constrainty, triggery (business pravidla v DB)
