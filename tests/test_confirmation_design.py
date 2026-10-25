@@ -78,6 +78,7 @@ def test_branch_approval_deadline_boundary(now, outcome):
         (draft(state="CONFIRMED"), 1, NOW, NOT_DRAFT),
         (draft(state="PENDING_APPROVAL", deadline="2026-09-15 09:45:00"), 1, NOW, NOT_DRAFT),
         (draft(start="2026-09-15 08:00", expires="2026-09-15 08:05:00"), 1, datetime(2026, 9, 15, 8, 2), ALREADY_STARTED),
+        (draft(start="2026-09-15 08:00", expires="2026-09-15 08:05:00"), 1, NOW, ALREADY_STARTED),  # hranice: start == teď (C06, D4)
         (draft(user_id=2, state="CONFIRMED"), 1, NOW, NOT_OWNER),  # pořadí: vlastník se kontroluje první
     ],
 )

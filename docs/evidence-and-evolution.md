@@ -302,3 +302,40 @@ Remaining design risk:
 
 Commit/tag:
 - větev `c05-detailed-design`, commit `b6cdfd4`, tag `v0.5.0`
+
+---
+
+# CV6 (C06)
+
+## C06 Internal Evidence Assessment
+
+Assessed baseline:
+`main` ve verzi `v0.5.0`. Hodnotil tým ParkingCrew 25. 10. 2026, vyplněný formulář je v [assessment_form.md](assessment_form.md).
+
+Verified findings:
+- **F1 (C03, ADR-01):** ADR-01 slibuje, že se zpráva neztratí, ale `OutboxDispatcher.pending()` bere jen události s méně než 5 pokusy. Po 5 neúspěšných doručeních se událost už nikdy nedoručí. Ověřili dočasným testem (5× výpadek → nic nedoručeno, nic nečeká).
+- **F2 (C04):** C04 v projektu chybělo – žádný quality concern, kritérium, měření ani rozhodnutí.
+- F3 (C02, specifikace jen v docx mimo repo) hodnotitelé zamítli jako kandidáta, protože R1–R5 ověřili i bez docx.
+
+Owner disposition:
+
+| Finding | Disposition | Action |
+| --- | --- | --- |
+| F1 | ACCEPTED – change required | opraveno, viz níže |
+| F2 | ACCEPTED – change required | C04 doplněno zpětně |
+| F3 | ACCEPTED – change required (i když ho hodnotitelé zamítli) | specifikace přepsaná z docx do Markdownu |
+
+Actions / justified no-change decisions:
+- **F1 – jak jsme tomu předešli:** limit 5 pokusů jsme nechali jen pro dispatch po POST, aby jedna nedoručitelná zpráva nebrzdila každý request. `OutboxDispatcher.dispatch()` / `pending()` dostaly parametr `max_attempts` a `scripts/dispatch_notifications.py` volá `dispatch(max_attempts=None)`, takže bere všechny nedoručené události bez ohledu na počet pokusů. Zpráva tak v outboxu čeká, dokud se nedoručí, a ADR-01 zase platí. Nový test `test_adr01_event_over_attempt_limit_is_not_lost_and_script_delivers_it`: 5× výpadek, dispatch po POST zprávu přeskočí, skript ji doručí. Bez opravy test padá. ADR-01 (negativní důsledky) a D5 jsou doplněné.
+- **F2:** C04 jsme doplnili zpětně (sekce CV4 výše, rozhodnutí D9, tag `v0.4.0`). Měření ukázalo, že původní stav kritérium nesplňoval (p95 OP-03 kolem 2 s), proto jsme změnili i kód.
+- **F3:** specifikaci v0.1 a v0.2 jsme přepsali z `cv2.docx` do Markdownu do [intent-and-change.md](intent-and-change.md) (sekce CV2). Přidali jsme diagramy v0.1 a tabulku, kde je který požadavek ověřený.
+- Mimo findings: u D4 hodnotitelé napsali, že jim přežil mutant na hranici „start = teď“. Doplnili jsme test `test_failure_behavior_returns_defined_reason` o případ start == teď → ALREADY_STARTED (REQ-03 v0.2: začátek musí být v budoucnu).
+- Ověření po změnách: `pytest` 102 passed, `scripts/verify_c02.py` 14/14 OK.
+
+Remaining evidence gaps:
+- Cron pro `scripts/dispatch_notifications.py` nastavený nemáme. Bez provozu a bez spuštění skriptu čeká zpráva po 5 pokusech v outboxu.
+- Propadání (DR-2) je pořád „líné“ a o propadlé žádosti se žadatel nedozví (od C03 beze změny).
+- C04 je měřené jen na jednom notebooku a vývojovém serveru. Při 20× souběhu kritérium neplatí.
+
+Commit/tag:
+- větev `c06-assessment-fixes`, tag `v0.6.0`

@@ -17,6 +17,8 @@ from ..timeutil import format_ts, parse_dt
 
 logger = logging.getLogger(__name__)
 
+# Dispatch po POST zkouší událost nejvýš 5×, aby jedna nedoručitelná zpráva nebrzdila každý
+# request. Skript scripts/dispatch_notifications.py bere i ty po limitu, takže se zpráva neztratí (C06, F1).
 MAX_ATTEMPTS = 5
 
 
@@ -26,15 +28,18 @@ class OutboxDispatcher:
         self.notifier = notifier
         self.clock = clock
 
-    def pending(self) -> list:
+    def pending(self, max_attempts: int | None = MAX_ATTEMPTS) -> list:
+        """Nedoručené události; max_attempts=None = všechny bez ohledu na počet pokusů."""
+        if max_attempts is None:
+            return self.conn.execute("SELECT * FROM outbox WHERE sent_at IS NULL ORDER BY id").fetchall()
         return self.conn.execute(
-            "SELECT * FROM outbox WHERE sent_at IS NULL AND attempts < ? ORDER BY id", (MAX_ATTEMPTS,)
+            "SELECT * FROM outbox WHERE sent_at IS NULL AND attempts < ? ORDER BY id", (max_attempts,)
         ).fetchall()
 
-    def dispatch(self) -> int:
-        """Pokusí se doručit všechny nedoručené události. Vrací počet doručených."""
+    def dispatch(self, max_attempts: int | None = MAX_ATTEMPTS) -> int:
+        """Pokusí se doručit nedoručené události (viz pending()). Vrací počet doručených."""
         delivered = 0
-        for row in self.pending():
+        for row in self.pending(max_attempts):
             try:
                 with transaction(self.conn):
                     # druhý dispatcher mohl stejnou událost mezitím doručit

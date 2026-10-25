@@ -1,7 +1,8 @@
 """Doručí čekající události z outboxu do Notification Service (ADR-01).
 
-Aplikace doručuje sama po každém POST požadavku. Skript je pro opakování nedoručených
-událostí bez provozu, např. z cronu / Plánovače úloh:  python scripts/dispatch_notifications.py
+Aplikace doručuje sama po každém POST požadavku, ale jednu událost zkusí nejvýš MAX_ATTEMPTS×.
+Skript je pro opakování nedoručených událostí bez provozu a bere i ty po limitu, např. z cronu /
+Plánovače úloh:  python scripts/dispatch_notifications.py
 """
 import sys
 from pathlib import Path
@@ -20,8 +21,8 @@ def main() -> int:
     with app.app_context():
         conn, clock = get_db(), app.config["CLOCK"]
         dispatcher = OutboxDispatcher(conn, NotificationService(conn, DatabaseChannel(conn, clock)), clock)
-        delivered = dispatcher.dispatch()
-        print(f"doručeno {delivered}, čeká {len(dispatcher.pending())}")
+        delivered = dispatcher.dispatch(max_attempts=None)
+        print(f"doručeno {delivered}, čeká {len(dispatcher.pending(max_attempts=None))}")
     return 0
 
 

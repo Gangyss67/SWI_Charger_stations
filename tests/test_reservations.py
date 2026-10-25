@@ -12,6 +12,7 @@ import pytest
 
 from charging.db import connect
 from charging.services import notifications
+from charging.services.outbox import MAX_ATTEMPTS, OutboxDispatcher
 from charging.services.reservations import (
     CANCELLED,
     CANCELLED_BY_ADMIN,
@@ -592,3 +593,17 @@ def test_adr01_notification_failure_keeps_event_for_retry(svc, conn, users):
     assert deliver(conn) == 1  # další pokus už projde
     assert any("byla schválena" in m for m in messages_for(conn, users["ev"]))
     assert deliver(conn) == 0  # nedoručuje se dvakrát
+
+
+def test_adr01_event_over_attempt_limit_is_not_lost_and_script_delivers_it(svc, conn, users):
+    """C06 F1: po MAX_ATTEMPTS pokusech ji dispatch po POST už nezkouší, skript ano."""
+    rid = pending(svc, users, "ev", HPC08, at(10), 1)
+    svc.approve(users["admin"], rid)
+    for _ in range(MAX_ATTEMPTS):
+        assert deliver(conn, BrokenNotifier()) == 0
+    assert outbox(conn)[0]["attempts"] == MAX_ATTEMPTS
+    assert deliver(conn) == 0  # dispatch po POST ji přeskočí
+    script = OutboxDispatcher(conn, notifications.NotificationService(conn, notifications.DatabaseChannel(conn)))
+    assert len(script.pending(max_attempts=None)) == 1  # pořád čeká, neztratila se
+    assert script.dispatch(max_attempts=None) == 1  # jako scripts/dispatch_notifications.py
+    assert any("byla schválena" in m for m in messages_for(conn, users["ev"]))
