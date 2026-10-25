@@ -38,7 +38,7 @@ SQLite (schema.sql)  ◄── OutboxDispatcher (services/outbox.py) ──► N
 
 ### D3 – Časy jako text `YYYY-MM-DD HH:MM` v lokálním čase, sloty po 30 min
 - **Rozhodnutí:** formát je lexikograficky řaditelný, takže překryv `a.start < b.end AND b.start < a.end` funguje přímo v SQL. Zarovnání na :00/:30 hlídá služba i `CHECK`.
-- **Důsledky:** nepodporujeme více časových pásem; přechod letního/zimního času není řešen (viz Unknown v Project Frame).
+- **Důsledky:** nepodporujeme více časových pásem; přechod letního/zimního času zatím neřešíme (parkoviště je jedno, v jednom pásmu).
 
 ### D4 – Schvalování jen pro DC/HPC, žádost PENDING_APPROVAL blokuje slot (C02, baseline v0.2)
 *V CV1 se schvalovala každá rezervace, v CV2 přepsáno podle baseline v0.2.*

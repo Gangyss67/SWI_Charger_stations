@@ -1,4 +1,4 @@
-"""Doménová logika rezervací nabíjecích stanic – specifikace baseline v0.2 (cv2.docx).
+"""Doménová logika rezervací nabíjecích stanic – specifikace baseline v0.2 (docs/specification.md).
 
 Operace a přechody stavů:
   OP-01 Check Availability   search_availability(), availability()  stav se nemění

@@ -42,7 +42,7 @@ Decision / what changes because of the result:
 ## Evidence C02: specifikace → běžící aplikace
 
 Přijatá baseline:
-- Specification Baseline v0.2 (cv2.docx, bod 13) = v0.1 (OP-01–OP-04, BR-01–BR-05) + změna C02: rezervace rychlých stanic (DC ≥ 50 kW, HPC) schvaluje administrátor. Nová operace OP-05 Approve / Reject, nové BR-06 Approval policy, upravené BR-02 (blokující stavy CONFIRMED + PENDING_APPROVAL) a BR-03 (stažení žádosti), nové stavy PENDING_APPROVAL a REJECTED.
+- Specification Baseline v0.2 ([specification.md](specification.md), část 2; původně cv2.docx, bod 13) = v0.1 (OP-01–OP-04, BR-01–BR-05) + změna C02: rezervace rychlých stanic (DC ≥ 50 kW, HPC) schvaluje administrátor. Nová operace OP-05 Approve / Reject, nové BR-06 Approval policy, upravené BR-02 (blokující stavy CONFIRMED + PENDING_APPROVAL) a BR-03 (stažení žádosti), nové stavy PENDING_APPROVAL a REJECTED.
 
 Předvedené základní operace (běžící server `python run.py`, HTTP + UI):
 - OP-01 Check Availability – formulář „Nová rezervace“ na `/` přesně podle aktivitního diagramu OP-01/02 (krok 1: interval, typ vozu a SPZ; krok 2: seznam volných stanic, PHEV bez HPC; „Vytvořit návrh“ = OP-02), `GET /api/availability` (10 stanic, AVAILABLE/UNAVAILABLE + důvod `COLLISION` / `PENDING_APPROVAL` / `VEHICLE`, příznak „vyžaduje schválení“), sloty stanice `/stations/<id>`.
@@ -76,6 +76,11 @@ Nalezený nesoulad a způsob vyřešení:
 - Rozpor v pracovní verzi bodů 13/15: „zrušení PENDING_APPROVAL > 30 min předem“ × stavový diagram „Cancel [User / Admin]“ bez podmínky. → BR-03 v0.2: stažení žádosti nemá 30min limit (V7).
 - Kontrola UI proti docx (po předvedení): formulář vypadal jako „vyhledávání podle SPZ“, výsledky ukazovaly i obsazené stanice a tlačítko „Vytvořit a potvrdit“ slučovalo OP-02 a OP-03, které docx vede jako dvě samostatné akce uživatele. → UI upraveno přesně podle aktivitního diagramu OP-01/02: SPZ se zadává v kroku 1, ale dostupnost na ní nezávisí (OP-01 ji nepoužívá), zobrazí se jen volné stanice (PHEV bez HPC) a výběr stanice vytvoří jen DRAFT; potvrzení je samostatné tlačítko „Potvrdit“ (OP-03).
 - Pracovní verze uváděla Administrátora jako nového aktéra, ale v diagramu případů užití je už ve v0.1. → Nový aktér nevzniká, Admin získává nový cíl OP-05. Lokální čísla pravidel v OP-01/OP-02 (BR-02 Compatibility, BR-03 Expiration) neodpovídala katalogu → v dotčených částech v0.2 odkazujeme na katalog (BR-04, BR-05).
+- Doplněno později (říjen 2026, při převodu specifikace z cv2.docx do `docs/specification.md`):
+  - OP-02 je ve v0.2 nedotčená, takže v ní lokální čísla pravidel zůstala → opraveno i v OP-01 a OP-02 v0.1 (BR-01, BR-02, BR-04, BR-05).
+  - REQ-01 v0.1 říkalo, že pro PHEV jsou nedostupné „nízkorychlostní i vysokorychlostní“ stanice → opraveno na HPC, jak to už měla v0.2 i aplikace. BR-04 nově výslovně říká, že PHEV smí na AC 01–06 a DC 07.
+  - Zadání chtělo popsat souběh zrušení s jinou operací, ve specifikaci chyběl → OP-04 v0.2 doplněná: operace nad stejnou rezervací proběhnou jedna po druhé a druhá se vyhodnotí podle stavu po první. Ověřuje to nový test `test_op04_v02_withdraw_and_admin_decision_see_state_left_by_the_other`.
+  - Baseline v0.1 je výslovně označená jako schválená týmem a do repa přibyly diagramy v0.1 (`docs/diagrams/*_v01.png`).
 
 Shrnutí dopadu změny:
 - Nová operace OP-05 pro roli Admin, nové BR-06, upravené BR-02 a BR-03; OP-02, BR-01, BR-04, BR-05 beze změny.
@@ -104,7 +109,7 @@ Commit / tag aplikace:
 
 ## C03 — Architecture Evidence
 
-Baseline: v0.2 (cv2.docx, aplikace `v0.2.3`)
+Baseline: v0.2 ([specification.md](specification.md), aplikace `v0.2.3`)
 
 Part A:
 Část A jsme dělali v rámci tohoto C03. Krátké AS-IS shrnutí je v `docs/architecture-and-decisions.md` (C03 – Výchozí stav): stav mění jen `ReservationService`, BR-02 hlídá služba i trigger v `BEGIN IMMEDIATE` transakci a notifikace se volaly synchronně po COMMIT, při chybě se ztratily.
@@ -181,8 +186,16 @@ Tests derived from DD:
 | jedna transakce (REQ-04) | z 10 souběžných potvrzení projde jedno | component | `test_op03_req04_concurrent_confirms_allow_exactly_one` (už z C02) |
 
 Proč zrovna tahle úroveň:
-- `test_branch_approval_deadline_boundary` je unit test. Hranice je jen výpočet v policy (start − 15 min proti `now`), takže stačí slovník s rezervací a čas, DB ani hodiny nepotřebujeme.
-- `test_collaboration_op01_and_op03_decide_the_same_way` je komponentový. Chyba by tu byla ve spolupráci: hledání i potvrzení si musí z DB načíst stejné blokující rezervace a poslat je do policy. Unit test samotné policy by to nezachytil.
+
+`test_branch_approval_deadline_boundary`
+- Selected level: unit.
+- Why this level: hranice je jen výpočet v policy (start − 15 min proti `now`), takže stačí slovník s rezervací a čas, DB ani hodiny nepotřebujeme.
+- What design decision does this test verify: lhůta schválení je `start − 15 min` a hranice je ještě povolená (`now > deadline` → REJECT s důvodem TOO_LATE_FOR_APPROVAL).
+
+`test_collaboration_op01_and_op03_decide_the_same_way`
+- Selected level: component.
+- Why this level: chyba by tu byla ve spolupráci – hledání i potvrzení si musí z DB načíst stejné blokující rezervace a poslat je do policy. Unit test samotné policy by to nezachytil.
+- What design decision does this test verify: o konfliktu rozhoduje jeden vlastník (`AvailabilityPolicy`) pro OP-01 i OP-03, takže co hledání ukáže jako obsazené, potvrzení odmítne.
 
 Unit/component tests executed:
 - `python -m pytest tests/test_confirmation_design.py` → 22 passed
