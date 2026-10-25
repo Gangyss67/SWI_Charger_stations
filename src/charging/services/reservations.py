@@ -1,4 +1,4 @@
-"""Doménová logika rezervací nabíjecích stanic – specifikace baseline v0.2 (docs/specification.md).
+"""Doménová logika rezervací nabíjecích stanic – specifikace baseline v0.2 (docs/intent-and-change.md).
 
 Operace a přechody stavů:
   OP-01 Check Availability   search_availability(), availability()  stav se nemění
@@ -24,7 +24,7 @@ from contextlib import contextmanager
 from datetime import date, datetime, time, timedelta
 from typing import Callable
 
-from ..db import transaction
+from ..db import transaction, write_lock
 from .domain import (  # VEHICLE_* a stavy importují odsud i views.py a auth.py
     BLOCKING_STATES,
     CANCELLED,
@@ -209,14 +209,15 @@ class ReservationService:
         Musí běžet mimo otevřenou transakci, aby ho neodvolal rollback odmítnuté operace.
         """
         ts = format_ts(now or self.now())
-        cur = self.conn.execute(
-            """
-            UPDATE reservations SET state = 'EXPIRED', updated_at = ?
-            WHERE (state = 'DRAFT' AND draft_expires_at < ?)
-               OR (state = 'PENDING_APPROVAL' AND approval_deadline < ?)
-            """,
-            (ts, ts, ts),
-        )
+        with write_lock():
+            cur = self.conn.execute(
+                """
+                UPDATE reservations SET state = 'EXPIRED', updated_at = ?
+                WHERE (state = 'DRAFT' AND draft_expires_at < ?)
+                   OR (state = 'PENDING_APPROVAL' AND approval_deadline < ?)
+                """,
+                (ts, ts, ts),
+            )
         return cur.rowcount
 
     # ------------------------------------------------------------------ dotazy

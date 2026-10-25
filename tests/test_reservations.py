@@ -1,4 +1,4 @@
-"""Testy doménové logiky podle specifikace baseline v0.2 (docs/specification.md).
+"""Testy doménové logiky podle specifikace baseline v0.2 (docs/intent-and-change.md).
 
 Každá operace OP-01..OP-05 má testy pojmenované podle příkladů ověření ze specifikace;
 "teď" je 15.09.2026 08:00 (viz conftest.clock).

@@ -33,7 +33,7 @@ SQLite (schema.sql)  ◄── OutboxDispatcher (services/outbox.py) ──► N
 ### D2 – Business pravidla vynucujeme dvakrát: ve službě i v databázi
 *V CV2 doplněné nové triggery pro baseline v0.2.*
 - **Rozhodnutí:** `ReservationService` kontroluje pravidla a vrací srozumitelné chyby; triggery v `schema.sql` (`BLOCKING_OVERLAP`, `HIGH_SPEED_BEV_ONLY`, `INVALID_STATE_TRANSITION`, `INVALID_INITIAL_STATE`, `APPROVAL_REQUIRED`) jsou pojistka proti chybě v kódu, ručnímu zásahu do DB i souběhu. Časová pravidla (5 min, T_start − 15 min, 30 min) hlídá jen služba – DB nezná „teď“ aplikace.
-- **Souběh:** operace běží v `BEGIN IMMEDIATE` transakci – kontrola dostupnosti a zápis jsou atomické.
+- **Souběh:** operace běží v `BEGIN IMMEDIATE` transakci – kontrola dostupnosti a zápis jsou atomické. Od C04 čekají zápisy jednoho procesu navíc ve frontě v aplikaci (D9).
 - **Důsledky:** pravidlo je na dvou místech; testy ověřují obě vrstvy zvlášť.
 
 ### D3 – Časy jako text `YYYY-MM-DD HH:MM` v lokálním čase, sloty po 30 min
@@ -346,6 +346,23 @@ Rezervace v kódu není třída, je to řádek tabulky `reservations` (v diagram
 **Kontrola:** `tests/test_architecture.py` (pustí se s ostatními testy). Přes `ast` projde zdrojáky a ověří, že `services/reservations.py` neimportuje `notifications` ani `outbox` a nepoužívá `notifier`, a že metody událostí (`reservation_approved`, `slot_released`, …) volá jen `services/outbox.py`.
 
 **Výsledek:** 2 passed. Zkusili jsme i opak: když jsme do `services/reservations.py` dočasně přidali `from .notifications import NotificationService`, test spadl (`1 failed`), po vrácení zase prošel.
+
+---
+
+# CV4 (C04)
+
+## Rozhodnutí z CV4
+
+### D9 – Zápisy z jednoho procesu řadíme do fronty v aplikaci
+- **Kontext:** měření C04 (kritérium K1–K3 a výsledky jsou v [evidence-and-evolution.md](evidence-and-evolution.md)) ukázalo, že při 50 souběžných potvrzeních BR-02 drží a nic nepadá, ale p95 OP-03 je kolem 2 s místo nejvýš 500 ms. Každý request dělá dva zápisy (`expire_overdue()` a transakci operace), SQLite pouští jen jeden zápis najednou a čekající spojení uspává busy handler, který zkouší zámek znovu po 1–100 ms.
+- **Zvažované varianty:** WAL, WAL + `synchronous = NORMAL`, WAL + fronta zápisů, samotná fronta zápisů. Každou jsme změřili stejným skriptem `scripts/measure_c04.py`.
+- **Rozhodnutí:** `db.transaction()` a `expire_overdue()` berou před zápisem zámek procesu (`db.write_lock()`, `threading.RLock`). Vlákna jedné aplikace tak čekají ve frontě a busy timeout SQLite zůstává jen pro zápisy z jiného procesu (`scripts/dispatch_notifications.py`). Journal mode a `synchronous` necháváme výchozí.
+- **Důvod:** samotná fronta stáhla p95 OP-03 při 50 klientech z 1804–2216 ms na 272–332 ms. WAL k ní přidal jen málo (víc až při 100 klientech), ale přidává soubory `-wal` / `-shm`, záloha už není jeden soubor a na síťovém nebo synchronizovaném disku (repo i `instance/` máme v OneDrive) se nedoporučuje. `synchronous = NORMAL` by při výpadku proudu mohl ztratit poslední potvrzené rezervace a výsledek byl stejně na hraně limitu (384 a 507 ms).
+- **Přijaté negativní důsledky:**
+  - fronta funguje jen uvnitř jednoho procesu; víc instancí aplikace by zase čekalo v SQLite,
+  - zápisy jsou pořád jeden po druhém – při 100 klientech (20×) je p95 kolem 600 ms, tam už kritérium neplatí,
+  - zápisy mimo `transaction()` a `expire_overdue()` (registrace, označení notifikací jako přečtených) do fronty nejdou a čekají přes busy timeout; jsou řídké.
+- **Znovu otevřeme, když:** poběží víc procesů aplikace (stejný důvod jako u ADR-01), nebo budeme potřebovat víc než 10× dnešní špičky – pak WAL, případně PostgreSQL (D1).
 
 ---
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -43,18 +44,31 @@ def connect(path: str) -> sqlite3.Connection:
     return conn
 
 
+# Zápisy z vláken jednoho procesu čekají ve frontě tady, ne v busy handleru SQLite, který
+# čekající vlákna uspává a budí po 1–100 ms (C04, D9). Jiný proces (dispatch skript) dál
+# čeká přes timeout spojení.
+_write_lock = threading.RLock()
+
+
+@contextmanager
+def write_lock():
+    with _write_lock:
+        yield
+
+
 @contextmanager
 def transaction(conn: sqlite3.Connection):
     """BEGIN IMMEDIATE získá zápisový zámek hned, takže kontrola dostupnosti
     a zápis proběhnou atomicky i při souběžných požadavcích."""
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        yield conn
-    except BaseException:
-        conn.execute("ROLLBACK")
-        raise
-    else:
-        conn.execute("COMMIT")
+    with _write_lock:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield conn
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+        else:
+            conn.execute("COMMIT")
 
 
 def init_schema(conn: sqlite3.Connection, seed_demo_users: bool = True) -> None:
