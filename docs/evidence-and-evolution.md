@@ -42,7 +42,7 @@ Decision / what changes because of the result:
 ## Evidence C02: specifikace → běžící aplikace
 
 Přijatá baseline:
-- Specification Baseline v0.2 ([specification.md](specification.md), část 2; původně cv2.docx, bod 13) = v0.1 (OP-01–OP-04, BR-01–BR-05) + změna C02: rezervace rychlých stanic (DC ≥ 50 kW, HPC) schvaluje administrátor. Nová operace OP-05 Approve / Reject, nové BR-06 Approval policy, upravené BR-02 (blokující stavy CONFIRMED + PENDING_APPROVAL) a BR-03 (stažení žádosti), nové stavy PENDING_APPROVAL a REJECTED.
+- Specification Baseline v0.2 ([intent-and-change.md](intent-and-change.md), CV2 – část 2; původně cv2.docx, bod 13) = v0.1 (OP-01–OP-04, BR-01–BR-05) + změna C02: rezervace rychlých stanic (DC ≥ 50 kW, HPC) schvaluje administrátor. Nová operace OP-05 Approve / Reject, nové BR-06 Approval policy, upravené BR-02 (blokující stavy CONFIRMED + PENDING_APPROVAL) a BR-03 (stažení žádosti), nové stavy PENDING_APPROVAL a REJECTED.
 
 Předvedené základní operace (běžící server `python run.py`, HTTP + UI):
 - OP-01 Check Availability – formulář „Nová rezervace“ na `/` přesně podle aktivitního diagramu OP-01/02 (krok 1: interval, typ vozu a SPZ; krok 2: seznam volných stanic, PHEV bez HPC; „Vytvořit návrh“ = OP-02), `GET /api/availability` (10 stanic, AVAILABLE/UNAVAILABLE + důvod `COLLISION` / `PENDING_APPROVAL` / `VEHICLE`, příznak „vyžaduje schválení“), sloty stanice `/stations/<id>`.
@@ -76,7 +76,7 @@ Nalezený nesoulad a způsob vyřešení:
 - Rozpor v pracovní verzi bodů 13/15: „zrušení PENDING_APPROVAL > 30 min předem“ × stavový diagram „Cancel [User / Admin]“ bez podmínky. → BR-03 v0.2: stažení žádosti nemá 30min limit (V7).
 - Kontrola UI proti docx (po předvedení): formulář vypadal jako „vyhledávání podle SPZ“, výsledky ukazovaly i obsazené stanice a tlačítko „Vytvořit a potvrdit“ slučovalo OP-02 a OP-03, které docx vede jako dvě samostatné akce uživatele. → UI upraveno přesně podle aktivitního diagramu OP-01/02: SPZ se zadává v kroku 1, ale dostupnost na ní nezávisí (OP-01 ji nepoužívá), zobrazí se jen volné stanice (PHEV bez HPC) a výběr stanice vytvoří jen DRAFT; potvrzení je samostatné tlačítko „Potvrdit“ (OP-03).
 - Pracovní verze uváděla Administrátora jako nového aktéra, ale v diagramu případů užití je už ve v0.1. → Nový aktér nevzniká, Admin získává nový cíl OP-05. Lokální čísla pravidel v OP-01/OP-02 (BR-02 Compatibility, BR-03 Expiration) neodpovídala katalogu → v dotčených částech v0.2 odkazujeme na katalog (BR-04, BR-05).
-- Doplněno později (říjen 2026, při převodu specifikace z cv2.docx do `docs/specification.md`):
+- Doplněno později (říjen 2026, při převodu specifikace z cv2.docx do `docs/intent-and-change.md`):
   - OP-02 je ve v0.2 nedotčená, takže v ní lokální čísla pravidel zůstala → opraveno i v OP-01 a OP-02 v0.1 (BR-01, BR-02, BR-04, BR-05).
   - REQ-01 v0.1 říkalo, že pro PHEV jsou nedostupné „nízkorychlostní i vysokorychlostní“ stanice → opraveno na HPC, jak to už měla v0.2 i aplikace. BR-04 nově výslovně říká, že PHEV smí na AC 01–06 a DC 07.
   - Zadání chtělo popsat souběh zrušení s jinou operací, ve specifikaci chyběl → OP-04 v0.2 doplněná: operace nad stejnou rezervací proběhnou jedna po druhé a druhá se vyhodnotí podle stavu po první. Ověřuje to nový test `test_op04_v02_withdraw_and_admin_decision_see_state_left_by_the_other`.
@@ -109,7 +109,7 @@ Commit / tag aplikace:
 
 ## C03 — Architecture Evidence
 
-Baseline: v0.2 ([specification.md](specification.md), aplikace `v0.2.3`)
+Baseline: v0.2 ([intent-and-change.md](intent-and-change.md), aplikace `v0.2.3`)
 
 Part A:
 Část A jsme dělali v rámci tohoto C03. Krátké AS-IS shrnutí je v `docs/architecture-and-decisions.md` (C03 – Výchozí stav): stav mění jen `ReservationService`, BR-02 hlídá služba i trigger v `BEGIN IMMEDIATE` transakci a notifikace se volaly synchronně po COMMIT, při chybě se ztratily.
@@ -159,11 +159,83 @@ Pravidlo: `services/reservations.py` nezná Notification Service, `NotificationS
 Remaining uncertainty / risk:
 - Bez provozu se zprávy doručí až při spuštění `scripts/dispatch_notifications.py`. Cron jsme zatím nenastavili.
 - Propadnutí (DR-2) je pořád „líné“ a k propadlé žádosti se neposílá zpráva.
-- SQLite pouští jeden zápis najednou. Při 10× souběhu (future pressure Q) to může být úzké místo, zátěž jsme neměřili.
+- SQLite pouští jeden zápis najednou. Při 10× souběhu (future pressure Q) to může být úzké místo, zátěž jsme neměřili (později změřeno, viz C04).
 - U skutečného externího providera může zpráva přijít dvakrát (doručení aspoň jednou).
 
 Commit/tag:
 - větev `c02-baseline-v0.2`, commit `9f9a70c`, tag `v0.3.0`
+
+---
+
+# CV4 (C04)
+
+## C04 — Quality & Measurement
+
+Quality concern:
+Souběh ve špičce – future pressure Q z C01 (10× víc souběžných rezervací) a driver DR-1 z C03. Když hodně řidičů potvrzuje rezervace ve stejnou chvíli, nesmí vzniknout dvojí rezervace stanice (BR-02, REQ-04), požadavky nesmí padat a potvrzení nesmí trvat dlouho. SQLite pouští jeden zápis najednou (D1) a v C01–C03 jsme to vedli jako neověřené riziko.
+
+Evaluable criterion:
+Při **50 souběžných klientech**, kteří ve stejné chvíli vytvoří a potvrdí kolidující návrhy na 10 stanicích (5 klientů na stanici), v 6 kolech, tj. 300 potvrzení:
+- **K1** – v DB není žádný překryv rezervací v blokujícím stavu a na každé stanici v kole vyhraje právě jedno potvrzení, ostatní dostanou 409,
+- **K2** – žádná odpověď 5xx, žádné vypršení spojení (10 s, stejně jako timeout SQLite v `db.py`) a žádná výjimka v logu serveru,
+- **K3** – p95 doby odpovědi OP-03 (`POST /reservations/<id>/confirm`) je nejvýš 500 ms.
+
+Kritérium je splněné, jen když platí všechny tři body. Odkud jsou čísla:
+- 5 souběžných klientů je náš odhad dnešní špičky (10 stanic, ráno se potvrzuje víc rezervací naráz). Je to předpoklad, ne změřený provoz.
+- 50 klientů = 10× podle future pressure Q.
+- 500 ms jsme zvolili jako hranici, kdy odpověď na kliknutí „Potvrdit“ ještě působí okamžitě.
+
+Measurement / evidence:
+- Skript `scripts/measure_c04.py`, jeden příkaz, exit 0 = kritérium splněno. Spustí aplikaci stejně jako `python run.py` (samostatný proces, vývojový server Werkzeug s vláknem na request, viz G4 z C03) nad čistou SQLite DB v dočasném adresáři. Založí 100 testovacích účtů a zátěž posílá přes HTTP včetně přihlášení a CSRF tokenu, stejně jako prohlížeč.
+- V každém kole všichni klienti naráz vytvoří návrh (OP-02) a pak ho naráz potvrdí (OP-03). Klient *i* jde na stanici *i* mod 10, takže se zkouší AC → CONFIRMED i DC/HPC → PENDING_APPROVAL. Doba odpovědi se měří na straně klienta (HTTP na localhost, bez sítě).
+- Úrovně zátěže: 5 / 50 / 100 klientů, 6 kol na každé úrovni. BR-02 se na konci kontroluje SQL dotazem přímo nad DB.
+- Prostředí: notebook s Windows 11, AMD Ryzen 5 7535U (6 jader / 12 vláken), 14 GB RAM, Python 3.14.7. Klient i server běží na stejném stroji. Měřeno 25. 10. 2026.
+
+Výsledek – původní stav (kód z C05), 3 běhy:
+
+| Klienti | OP-03 p50 / p95 / max [ms] | K1 | K2 | K3 |
+| --- | --- | --- | --- | --- |
+| 5 | 46 / 69 / 97 · 39 / 67 / 91 · 46 / 87 / 89 | OK | OK | OK |
+| 50 | 761 / 1935 / 2500 · 997 / 1804 / 2417 · 813 / 2216 / 2715 | OK | OK | **FAIL** |
+| 100 | 1617 / 3430 / 4025 · 1637 / 3693 / 4213 · 1588 / 2752 / 3229 | OK | OK | FAIL |
+
+BR-02 drželo i při 100 klientech (0 překryvů, na každé stanici právě jeden vítěz, žádná 5xx). Nesplněná je jen doba odpovědi.
+
+Hledání příčiny – každá varianta změřená stejným skriptem, 50 klientů:
+
+| Varianta | OP-03 p95 / max [ms] | K3 |
+| --- | --- | --- |
+| původní stav (rollback journal, čekání přes busy timeout SQLite) | 1804–2216 / 2417–2715 | FAIL |
+| WAL | 584 / 903 | FAIL |
+| WAL + `synchronous = NORMAL` | 384 / 759, 507 / 1181 | na hraně, 1× FAIL |
+| WAL + fronta zápisů v aplikaci | 427 / 489, 276 / 319, 274 / 305 | OK |
+| fronta zápisů v aplikaci (bez WAL) | 358 / 408, 315 / 378 | OK |
+
+Každý request dělá dva zápisy (`expire_overdue()` a transakci operace) a SQLite pouští jen jeden zápis najednou. Čekající spojení přitom nestojí ve frontě, busy handler SQLite je uspí a zkouší zámek znovu po 1–100 ms, takže zámek je často volný a všichni spí. Fronta zápisů v aplikaci tohle odstranila, WAL k ní přidal už jen málo.
+
+Trade-off / decision:
+- **D9** ([architecture-and-decisions.md](architecture-and-decisions.md)): zápisy z jednoho procesu čekají ve frontě v aplikaci (`db.write_lock()` v `transaction()` a `expire_overdue()`). WAL ani `synchronous = NORMAL` nezavádíme.
+- Proč ne WAL: kritérium splní i bez něj a přidává provozní složitost (soubory `-wal` / `-shm`, nevhodný pro synchronizovaný disk – repo i `instance/` máme v OneDrive). Proč ne `synchronous = NORMAL`: při výpadku proudu by se mohly ztratit poslední potvrzené rezervace a výsledek byl stejně na hraně.
+- Cena: fronta pomáhá jen v jednom procesu a zápisy jsou dál sériové. Při 100 klientech (20×) p95 kritérium nesplňuje.
+
+Výsledek po změně, 3 běhy:
+
+| Klienti | OP-03 p50 / p95 / max [ms] | K1 | K2 | K3 |
+| --- | --- | --- | --- | --- |
+| 5 | 28 / 43 / 44 · 33 / 55 / 65 · 36 / 62 / 71 | OK | OK | OK |
+| 50 | 196 / 272 / 299 · 228 / 332 / 391 · 219 / 293 / 320 | OK | OK | **OK** |
+| 100 | 414 / 603 / 696 · 439 / 593 / 680 · 451 / 599 / 644 | OK | OK | FAIL (mimo kritérium) |
+
+Kritérium při 50 klientech je splněné ve všech třech bězích (`measure_c04.py` exit 0). Funkčně se nic nezměnilo: `pytest` 100 passed, `scripts/verify_c02.py` 14/14 OK, test souběhu REQ-04 dál pouští právě jedno potvrzení z 10.
+
+Remaining uncertainty / risk:
+- Měřeno jen na jednom notebooku a na vývojovém serveru z G4. Produkční WSGI server ani jiný HW jsme nezkoušeli.
+- Klient a server sdílejí stejné CPU, takže čísla jsou spíš horší odhad.
+- 5 souběžných jako dnešní špička je odhad, provoz nemáme.
+- 20× (100 klientů) kritérium nesplňuje (p95 kolem 600 ms). Na to by byla potřeba jiná DB (PostgreSQL, D1) nebo WAL a víc procesů.
+
+Commit/tag:
+- větev `c04-quality-measurement`, tag `v0.4.0`
 
 ---
 
@@ -226,7 +298,7 @@ Remaining design risk:
 - propadání je pořád „líné“ (`expire_overdue()` při requestu), stejné riziko jako v C03,
 - rezervace a stanice jsou v policy jen slovníky / `sqlite3.Row`, překlep v názvu sloupce se ukáže až za běhu,
 - DB triggery opakují část pravidel z policy, při změně pravidla se musí upravit obě místa,
-- SQLite pustí jen jeden zápis najednou, při větší zátěži to může brzdit (neměřili jsme).
+- SQLite pustí jen jeden zápis najednou, při větší zátěži to může brzdit (neměřili jsme, později změřeno, viz C04).
 
 Commit/tag:
 - větev `c05-detailed-design`, commit `b6cdfd4`, tag `v0.5.0`

@@ -5,7 +5,7 @@ Toto je naše týmové repo do předmětu SWI. Výsledkem je funkční rezervač
 **Tým:** Jan Staněk, Dominik Volný, Šimon Exner
 **Repozitář:** <https://github.com/Gangyss67/SWI_Charger_stations>
 
-Webová aplikace pro rezervaci 10 nabíjecích stanic (z toho 3 vysokorychlostní jen pro plně elektrické vozy) po 30minutových slotech, s přihlašováním uživatelů, schvalováním rezervací rychlých stanic a in-app notifikacemi. Aplikace odpovídá **specifikaci baseline v0.2** ([docs/specification.md](docs/specification.md), změna C02).
+Webová aplikace pro rezervaci 10 nabíjecích stanic (z toho 3 vysokorychlostní jen pro plně elektrické vozy) po 30minutových slotech, s přihlašováním uživatelů, schvalováním rezervací rychlých stanic a in-app notifikacemi. Aplikace odpovídá **specifikaci baseline v0.2** ([docs/intent-and-change.md](docs/intent-and-change.md), sekce CV2).
 
 ## Stack
 
@@ -53,6 +53,7 @@ Typ vozidla u účtu je jen výchozí hodnota – typ vozu a SPZ se zadávají u
 .\.venv\Scripts\python.exe -m pytest
 .\.venv\Scripts\python.exe scripts\verify_c02.py     # příklady ověření baseline v0.2 přes HTTP (exit 0 = OK)
 .\.venv\Scripts\python.exe scripts\dispatch_notifications.py   # doručí nedoručené notifikace z outboxu
+.\.venv\Scripts\python.exe scripts\measure_c04.py    # C04 – měření souběžného potvrzování, cca 1 min (exit 0 = kritérium splněno)
 ```
 
 ## Doména v kostce (baseline v0.2)
@@ -116,16 +117,16 @@ Spuštění jen těchto testů:
 README.md
 requirements.txt, pytest.ini, run.py
 docs/
-  intent-and-change.md          Project Frame + future pressure (C01)
-  specification.md              specifikace OP-01..OP-05, BR-01..BR-06, baseline v0.1 a v0.2 (C02)
-  architecture-and-decisions.md rozhodnutí, architektura (C03) a detailní návrh (C05)
-  evidence-and-evolution.md     evidence C01 (spike), C02, C03 a C05
+  intent-and-change.md          Project Frame + future pressure (C01), specifikace OP-01..OP-05,
+                                BR-01..BR-06, baseline v0.1 a v0.2 + dopad změny (C02)
+  architecture-and-decisions.md rozhodnutí, architektura (C03), D9 (C04) a detailní návrh (C05)
+  evidence-and-evolution.md     evidence C01 (spike), C02, C03, C04 (měření) a C05
   diagrams/                     use case, stavové a aktivitní diagramy v0.1/v0.2 (C02),
                                 diagramy architektury c03_* a detailního návrhu c05_* (PlantUML + PNG)
 src/charging/
   __init__.py                   app factory
   schema.sql                    tabulky, CHECK constrainty, triggery (business pravidla v DB)
-  db.py                         připojení, transakce, seed dat
+  db.py                         připojení, transakce (fronta zápisů, D9), seed dat
   auth.py, security.py          přihlášení/registrace, CSRF
   views.py                      stránky + JSON API
   services/reservations.py      ReservationService – operace OP-01..OP-05, transakce
@@ -137,5 +138,6 @@ src/charging/
 scripts/spike_persistence.py    C01 spike A – persistence
 scripts/verify_c02.py           C02 – příklady ověření baseline v0.2 přes HTTP
 scripts/dispatch_notifications.py  C03 – opakované doručení notifikací z outboxu
+scripts/measure_c04.py          C04 – měření souběžného potvrzování (kritérium K1–K3)
 tests/                          pytest testy (test_architecture.py = pravidlo z ADR-01, test_confirmation_design.py = C05)
 ```
