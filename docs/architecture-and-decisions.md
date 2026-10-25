@@ -49,7 +49,7 @@ SQLite (schema.sql)  ◄── OutboxDispatcher (services/outbox.py) ──► N
 ### D5 – Notification Service jako boundary za rozhraním
 *V CV2 nové události podle v0.2, v CV3 doručování přes outbox (ADR-01).*
 - **Rozhodnutí:** služba rezervací volá jen doménové události (`reservation_approved`, `reservation_rejected`, `reservation_cancelled_by_admin`, `slot_released`) – podle diagramu případů užití v0.2 je Notification Service napojena na OP-04 a OP-05. Kdo dostane zprávu, rozhoduje `NotificationService`; doručení zajišťuje `NotificationChannel` (dnes zápis do tabulky `notifications`).
-- **Selhání boundary:** od C03 podle ADR-01 – služba událost jen zapíše do tabulky `outbox` ve stejné transakci, doručí ji `OutboxDispatcher`. Když doručení selže, událost zůstane v outboxu a zkusí se znovu; provedenou operaci to nezvrátí (test `test_adr01_notification_failure_keeps_event_for_retry`).
+- **Selhání boundary:** od C03 podle ADR-01 – služba událost jen zapíše do tabulky `outbox` ve stejné transakci, doručí ji `OutboxDispatcher`. Když doručení selže, událost zůstane v outboxu a zkusí se znovu; provedenou operaci to nezvrátí (test `test_adr01_notification_failure_keeps_event_for_retry`). Po 5 neúspěšných pokusech ji dispatch po POST už nezkouší, ale skript `scripts/dispatch_notifications.py` bere i tyhle, takže se zpráva neztratí (C06, F1, test `test_adr01_event_over_attempt_limit_is_not_lost_and_script_delivers_it`).
 - **slot_released:** po zrušení / stažení / zamítnutí blokující rezervace upozorní (1) vlastníky návrhů (DRAFT) na stejné stanici, které teď lze potvrdit, a (2) uživatele s rezervací ve stejném čase na slabší stanici, pokud smí uvolněnou stanici použít (HPC jen BEV podle typu vozu v rezervaci).
 
 ### D6 – Bezpečnost přihlášení
@@ -211,7 +211,8 @@ Obě varianty umí požadované chování (rezervace se schválí i bez notifika
 - zpráva může dojít se zpožděním (až při dalším POST nebo spuštění skriptu),
 - doručení je „aspoň jednou“ – u skutečného externího providera může přijít dvakrát,
 - dispatcher běží v `after_request`, takže prodlouží POST, při kterém zrovna doručuje,
-- další tabulka a skript `scripts/dispatch_notifications.py`, který je potřeba pouštět (cron), když není provoz.
+- další tabulka a skript `scripts/dispatch_notifications.py`, který je potřeba pouštět (cron), když není provoz,
+- *(doplněno po C06, F1)* jednu událost zkouší dispatch po POST nejvýš 5×, aby nedoručitelná zpráva nebrzdila každý request. Po limitu v outboxu dál čeká a doručí ji až skript, který bere všechny nedoručené – bez cronu tedy může čekat dlouho.
 
 **Rozhodnutí znovu otevřeme, když:** přejdeme z SQLite na jinou DB nebo na víc instancí aplikace (dispatcher by se musel koordinovat), nebo když Notification Service bude mít vlastní spolehlivou frontu.
 
