@@ -498,3 +498,89 @@ Před C08 jsme prošli specifikaci, kód a zadání C01–C07 proti sobě: opera
 - Specifikace v0.2 a kód si odpovídají, `pytest` 102 passed, `verify_c02.py` 14/14, spike z C01 (`scripts/spike_persistence.py`) dál projde.
 - Nalezený nesoulad: evidence C01 odkazovala na test `test_db_trigger_blocks_overlapping_confirmed_even_without_service`, který jsme v C02 nahradili. Opraveno poznámkou v CV1.
 - Registr rizik C07: opatření pro R-01 a R-04 měla termín 9. 11. 2026 a hotová nebyla. R-01 (P1) řeší CR-08, plánovač (P2, R-04) zůstává otevřený – viz varianta B v CR-08.
+
+---
+
+# CV9 (C09)
+
+## C09 — Integration, CI and Release Record
+
+**C08 Change Card a rozhodnutí:** [intent-and-change.md](intent-and-change.md), CV8, CR-08 – ACCEPT varianta A (zpráva žadateli při líném propadnutí žádosti), varianta B (plánovač) DEFER.
+
+**Before / after:** `v0.8.0` (`505c3e5`) → `v0.9.0` (`9e81db9`), větev `c08-c10`. Schéma DB je v obou verzích 5, konfigurace stejná.
+
+**Dotčená tvrzení, nové AC a regrese:** nové AC-01 až AC-04 z CR-08. Beze změny musí zůstat BR-02 (TC-C08-01/02), BR-06 včetně hranice 09:45:00 a uvolnění slotu (V6), ADR-01 (outbox, výpadek Notification Service) a kritérium C04.
+
+**Co se změnilo:**
+- `services/reservations.py` – `expire_overdue()`: když něco propadlo, v jedné transakci najde propadlé žádosti, přepne je do EXPIRED a zapíše do outboxu `reservation_expired`. Když nic nepropadlo, transakci neotevírá (viz C04 níže).
+- `services/notifications.py` – `reservation_expired()` (text zprávy), `services/outbox.py` – doručení nové události.
+- `db.py` – odstraněné `write_lock()`, které po změně nikdo nevolal (zámek bere `transaction()`).
+- testy: 5 nových `test_cr08_*` v `tests/test_reservations.py`, nová událost v `tests/test_architecture.py`, TC-C08-03 ve `scripts/verify_c08.py`.
+- dokumenty: BR-06, tabulka ověření, D5, D7, D9, README. CI: `.github/workflows/ci.yml`.
+- N/A: schéma a migrace (outbox už existuje, události jsou text), HTTP API a UI (žádný nový endpoint), konfigurace (žádný nový parametr), worker (neexistuje, varianta B odložená).
+
+**Review:**
+Reviewer: **DOPLNIT** (Š. Exner nebo D. Volný – porovnat diff `git diff v0.8.0 v0.9.0` s AC-01 až AC-04). Při vlastní kontrole diffu jsme ověřovali: zpráva vzniká ve stejné transakci jako přechod do EXPIRED (ADR-01), hranice 09:45:00 se nezměnila, výběr a UPDATE jsou v jedné transakci (žádná dvojí zpráva), pozdní approve vrací 409 a nepošle zprávu o schválení. Při přeměření C04 jsme našli zhoršení doby odpovědi a opravili ho (viz níže) – zůstali jsme ve variantě A, chování se nezměnilo.
+
+| Test | Oracle (přijaté očekávání) | Příkaz / data | Očekáváno | Skutečně | Výsledek | Důkaz |
+| --- | --- | --- | --- | --- | --- | --- |
+| Nové chování – unit/component | AC-01 až AC-04 z CR-08 | `python -m pytest -k cr08`, DB v dočasném adresáři, hodiny 15. 9. 2026 | na `v0.8.0` padají, na `v0.9.0` projdou | `v0.8.0`: 4 failed, 1 passed (AC-02 je negativní, projde i bez změny); `v0.9.0`: 5 passed | PASS | výstup pytest |
+| Nové chování – TC-C08-03 (integrace) | AC-01, AC-03, AC-04 | `python scripts/verify_c08.py`, viz kroky níže | viz kroky | na `v0.8.0` 3 kroky FAIL, na `v0.9.0` vše OK | PASS | výstup skriptu |
+| C08 regrese TC-C08-01 | BR-01, BR-02, REQ-07 | `verify_c08.py` | 2× schválení navazující žádosti 200, obě CONFIRMED, 0 překryvů | stejně | PASS | výstup skriptu |
+| C08 regrese TC-C08-02 | BR-02, REQ-03 | `verify_c08.py` | 2× 409, B2 DRAFT, B1 beze změny, žádná událost | stejně | PASS | výstup skriptu |
+| Ostatní regrese | specifikace v0.2, ADR-01, architektonické pravidlo | `python -m pytest`, `python scripts/verify_c02.py` | vše projde | 107 passed (102 starých + 5 nových), 14/14 | PASS | výstup |
+| C04 (kvalita) | K1–K3 při 50 klientech | `python scripts/measure_c04.py` | exit 0, p95 OP-03 ≤ 500 ms | viz tabulka níže | PASS po opravě | výstup skriptu |
+
+**TC-C08-03 – kroky** (očekávání napsané podle AC před během, běží 2× s resetem):
+
+| # | Akce | Očekáváno | Skutečně (`v0.9.0`) |
+| --- | --- | --- | --- |
+| 1 | reset, `ridic_ev2` vytvoří a potvrdí HPC 09 [10:00, 10:30) | PENDING_APPROVAL, lhůta 09:45:00 | PENDING_APPROVAL, lhůta 09:45:00 |
+| 2 | 09:45:00 admin `POST /reservations/1/approve`, pak čtení z DB | 200, CONFIRMED, 0 událostí `reservation_expired` | 200, CONFIRMED, 0 |
+| 3 | reset na stejný stav; 09:45:01 `ridic_ev2` `GET /reservations`, pak čtení z DB | EXPIRED, 1 nedoručená událost `reservation_expired` | EXPIRED, 1, nedoručená |
+| 4 | 09:50 admin schvaluje pozdě, pak čtení z DB | 409, EXPIRED, žádná CONFIRMED na HPC 09, událost doručená (dispatch po POST), 0 překryvů | 409, EXPIRED, 0, doručená, 0 překryvů |
+| 5 | `ridic_ev2` `GET /notifications` + čtení tabulky `notifications` | právě 1 zpráva o propadnutí #1, žádná o schválení, zpráva je na stránce | 1, 0, ano |
+
+Na `v0.8.0` (před změnou) kroky 3, 4 a 5 FAIL – událost ani zpráva nevznikne. Celkem `verify_c08.py` na `v0.9.0`: 29/29 kroků, exit 0.
+
+**Skutečná integrační hranice:** HTTP rozhraní aplikace (Flask, přihlášení, CSRF, JSON) nad skutečným SQLite souborem; stav se po každém kroku čte novým `sqlite3` spojením přímo z DB, ne z odpovědi aplikace. Aplikace v `verify_c08.py` běží ve stejném procesu (Flask test client), aby šly řídit hodiny. Jako samostatný proces (`python run.py`) přes skutečné HTTP běží `measure_c04.py` a smoke test v čistém checkoutu.
+
+**C04 přeměření** (16. 11. 2026, stejný notebook jako v C04, p95 OP-03 při 50 / 100 klientech):
+
+| Verze | p95 při 50 klientech [ms] | K3 | p95 při 100 [ms] |
+| --- | --- | --- | --- |
+| `v0.8.0` (před změnou) | 352, 328 | OK | 634, 616 |
+| první verze změny (`expire_overdue()` vždy v transakci) | 424, **505**, 346 | 1× **FAIL** | 657, 626, 644 |
+| `v0.9.0` (transakce jen když něco propadlo) | 303, 289, 281, 295, 288 | OK | 533, 763, 528, 531, 525 |
+
+První verze změny držela zámek zápisu u každého requestu déle (čtyři příkazy místo jednoho `UPDATE`) a jeden běh z tří kritérium nesplnil. Po úpravě je p95 dokonce o něco lepší než před změnou, protože když nic nepropadlo, request nezapisuje vůbec. K1 a K2 ve všech bězích OK. Při 100 klientech (mimo kritérium) jsme v jednom z pěti běhů viděli jednu chybu spojení u klienta, v logu serveru výjimka nebyla a znovu se to neukázalo.
+
+**Závislosti, runtime, schéma, konfigurace:**
+- Python 3.14.7 (Windows 11), SQLite 3.50.4, schéma `user_version = 5`.
+- `requirements.txt` zamyká jen `Flask==3.1.3` a `pytest==9.1.1`. Čistá instalace 16. 11. stáhla: blinker 1.9.0, click 8.5.1, colorama 0.4.6, iniconfig 2.3.1, itsdangerous 2.2.0, Jinja2 3.1.6, MarkupSafe 3.0.4, packaging 26.3, pluggy 1.7.0, Pygments 2.21.0, Werkzeug 3.1.9. Vývojové `.venv` má starší Werkzeug 3.1.8, click 8.5.0, MarkupSafe 3.0.3, pluggy 1.6.0, iniconfig 2.3.0 – nepřímé závislosti nejsou zamčené (omezení, viz rozhodnutí).
+- Konfigurace (nic tajného v repu): `DATABASE_PATH` (výchozí `instance/charging.db`), `SECRET_KEY` (jinak se vygeneruje do `instance/secret_key`), `PORT` (5000), `FLASK_DEBUG`.
+
+**Čistý checkout** (16. 11. 2026 10:24–10:27, nový adresář mimo repo, stejný notebook, Windows 11, Python 3.14.7):
+```
+git clone <repo> clean_v090 && cd clean_v090 && git checkout v0.9.0
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install -r requirements.txt      -> exit 0
+.venv\Scripts\python.exe -m pytest                              -> 107 passed, exit 0
+.venv\Scripts\python.exe scripts\verify_c02.py                  -> 14/14, exit 0
+.venv\Scripts\python.exe scripts\verify_c08.py                  -> 29/29, exit 0
+python run.py + GET http://127.0.0.1:<port>/login               -> 200, instance/charging.db se založila sama
+```
+Nic jsme ručně nedoplňovali, stačilo README. Provedl J. Staněk (autor změny), takže to není nezávislá reprodukce. **DOPLNIT:** stejný postup od druhého člena týmu na jeho počítači (kdo, kdy, výsledek).
+
+**CI:** `.github/workflows/ci.yml` (push + PR, Ubuntu, Python 3.14: pip install, `pytest -v`, `verify_c02.py`, `verify_c08.py`). Stav: **NOT RUN** – větev `c08-c10` zatím není na GitHubu. Stejné příkazy prošly lokálně i v čistém checkoutu (exit 0). **DOPLNIT** po push: odkaz na běh a výsledek.
+
+**Artefakt:** tag `v0.9.0`, commit `9e81db930095fbedcf4822503e52cd6d5c5eddce`, strom `a86fb9cd23c47feb7afdfa6ae175a3f7540ab2b8`. Balík zdrojáků `git archive --format=zip --prefix=voltbook-v0.9.0/ v0.9.0` → SHA-256 `36aefa4602b372ec78f372b40f30bafcd9964beed4564659b49302aaf63e62b9` (vytvořený dvakrát, hash stejný). Build krok Python aplikace nemá, artefakt = zdrojáky + závislosti výše + schéma v5. Migrace není potřeba.
+
+**Návrat a rizika:**
+- Návrat na `v0.8.0`: schéma je stejné, DB funguje dál. Události `reservation_expired`, které už vznikly, ale stará verze nezná – dispatcher na nich spadne („Neznámá událost“), zůstanou nedoručené a skript je bude zkoušet pořád. Pak je potřeba je ručně smazat nebo označit jako odeslané. Nezkoušeli jsme to.
+- Propadání je pořád líné (I-02) a plánovač nemáme (I-01, varianta B) – v noci bez provozu přijde zpráva pozdě.
+- Souběh aplikace a skriptu `dispatch_notifications.py` ve dvou procesech při propadnutí jsme zvlášť netestovali (NOT VERIFIED), spoléháme na `BEGIN IMMEDIATE` jako u REQ-04.
+- R-01 z C07: opatření P1 je IMPLEMENTED a VERIFIED (testy výše), P2 (plánovač) DEFERRED. Reziduální riziko odhadujeme na L=2, I=1 → LOW (2) přes den, v noci bez provozu zůstává jako dřív.
+
+**Rozhodnutí o release candidate:** **CONDITIONAL** – owner J. Staněk, 16. 11. 2026.
+Nové AC i regrese prošly lokálně i v čistém checkoutu a C04 platí. Chybí ale: (1) review diffu druhým členem, (2) zelený běh CI na GitHubu, (3) čistý checkout od druhého člena. Když budou všechny tři v pořádku, bude to READY. Když CI nebo review najde problém s AC, HOLD a vracíme se k CR-08. Nezamčené nepřímé závislosti bereme jako známé omezení.
