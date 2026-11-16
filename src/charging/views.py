@@ -391,6 +391,7 @@ def _render_profile(form: dict | None = None, status: int = 200):
         countries=COUNTRIES,
         form=form,
         push_topic=topic,
+        push_enabled=notifications.is_push_enabled(get_db(), g.user["id"]),
         push_link=push_link,
         push_qr=push_qr,
         ntfy_url=_ntfy_url(),
@@ -446,7 +447,7 @@ def enable_push():
         flash("Notifikace na telefon nejsou na tomto serveru zapnuté.", "error")
     else:
         notifications.enable_push(get_db(), g.user["id"])
-        flash("Notifikace na telefon jsou zapnuté. Teď si téma přidejte v aplikaci ntfy (postup níže).", "success")
+        flash("Notifikace na telefon jsou zapnuté. Pokud téma v telefonu ještě nemáte, naskenujte QR kód.", "success")
     return redirect(url_for("main.profile") + "#push")
 
 
@@ -454,7 +455,15 @@ def enable_push():
 @login_required
 def disable_push():
     notifications.disable_push(get_db(), g.user["id"])
-    flash("Notifikace na telefon jsou vypnuté. Zprávy dál najdete v aplikaci.", "success")
+    flash("Notifikace na telefon jsou vypnuté. Téma zůstává, po zapnutí budou chodit zase na něj.", "success")
+    return redirect(url_for("main.profile") + "#push")
+
+
+@bp.post("/profile/push/regenerate")
+@login_required
+def regenerate_push():
+    notifications.regenerate_push_topic(get_db(), g.user["id"])
+    flash("Máte nové téma. Staré v aplikaci ntfy smažte a nové přidejte (QR kód níže).", "success")
     return redirect(url_for("main.profile") + "#push")
 
 
@@ -463,7 +472,7 @@ def disable_push():
 def test_push():
     topic = notifications.get_push_topic(get_db(), g.user["id"])
     if not topic or not _ntfy_url():
-        flash("Nejdřív si notifikace na telefon zapněte.", "error")
+        flash("Notifikace na telefon nejsou na tomto serveru zapnuté.", "error")
         return redirect(url_for("main.profile") + "#push")
     sender = current_app.config.get("PUSH_SENDER") or notifications.ntfy_send
     try:

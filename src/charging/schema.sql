@@ -3,6 +3,8 @@
 -- obejít chybou v aplikační vrstvě ani souběžnými požadavky. Časová pravidla
 -- (5 min DRAFT, T_start − 15 min, storno 30 min) hlídá služba – DB nezná „teď“ aplikace.
 
+-- push_topic = stálé téma pro notifikace na telefon (ntfy), přidělí se jednou (v6),
+-- push_enabled = posílat na telefon (v7). Komentáře nejsou uvnitř tabulky kvůli ALTER TABLE.
 CREATE TABLE IF NOT EXISTS users (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     username      TEXT    NOT NULL UNIQUE COLLATE NOCASE,
@@ -10,7 +12,8 @@ CREATE TABLE IF NOT EXISTS users (
     vehicle_type  TEXT    NOT NULL CHECK (vehicle_type IN ('BEV', 'PHEV')),  -- výchozí vůz do formulářů
     is_admin      INTEGER NOT NULL DEFAULT 0 CHECK (is_admin IN (0, 1)),
     created_at    TEXT    NOT NULL,
-    push_topic    TEXT    -- téma pro notifikace na telefon (ntfy), NULL = vypnuto (schéma v6)
+    push_topic    TEXT,
+    push_enabled  INTEGER NOT NULL DEFAULT 0 CHECK (push_enabled IN (0, 1))
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_push_topic ON users (push_topic) WHERE push_topic IS NOT NULL;
@@ -161,4 +164,4 @@ BEGIN
     SELECT RAISE(ABORT, 'APPROVAL_REQUIRED');
 END;
 
-PRAGMA user_version = 6;
+PRAGMA user_version = 7;

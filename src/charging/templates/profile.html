@@ -61,14 +61,15 @@
   <h2 id="push-title">Notifikace na telefon</h2>
   {% if not ntfy_url %}
     <p class="empty">Notifikace na telefon nejsou na tomto serveru zapnuté. Zprávy najdete v sekci <a href="{{ url_for('main.notifications_page') }}">Notifikace</a>.</p>
-  {% elif not push_topic %}
-    <p>Výsledek schválení, zrušení rezervace, propadlou žádost nebo uvolněné rychlejší stání vám můžeme poslat i na telefon. Používáme k tomu <a href="https://ntfy.sh" rel="noopener">ntfy</a>, bezplatnou aplikaci pro Android a iPhone. Nemusíte se nikde registrovat.</p>
-    <form method="post" action="{{ url_for('main.enable_push') }}">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <button class="btn">Zapnout notifikace na telefon</button>
-    </form>
   {% else %}
-    <p><span class="lamp ok">Zapnuto</span></p>
+    <div class="row">
+      {% if push_enabled %}<span class="lamp ok">Posílání zapnuto</span>{% else %}<span class="lamp off">Posílání vypnuto</span>{% endif %}
+      <form method="post" action="{{ url_for('main.disable_push' if push_enabled else 'main.enable_push') }}" class="inline">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button class="btn small{% if push_enabled %} quiet{% endif %}">{{ 'Vypnout' if push_enabled else 'Zapnout notifikace na telefon' }}</button>
+      </form>
+    </div>
+    <p>Na telefon chodí totéž co do <a href="{{ url_for('main.notifications_page') }}">Notifikací</a> v aplikaci{% if g.user.is_admin %}, včetně nových žádostí ke schválení{% endif %}. Používáme <a href="https://ntfy.sh" rel="noopener">ntfy</a>, bezplatnou aplikaci pro Android a iPhone bez registrace. <strong>Vaše téma je stálé</strong>, v telefonu ho přidáte jednou a zapnutí ani vypnutí ho nezmění.</p>
     <div class="push-setup">
       {% if push_qr %}
       <figure class="qr-box">
@@ -89,20 +90,14 @@
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <button class="btn small">Poslat zkušební notifikaci</button>
           </form>
-          <br><small>Zpráva se objeví do pár sekund. Když nepřijde, telefon odebírá jiné téma, než je tady. Odběr smažte a přidejte znovu (nejjednodušší je přes QR kód). {% if not push_topic.count('-') == 3 %}<strong>Máte ještě staré, těžko opsatelné téma, klikněte níže na „Vygenerovat nové téma“.</strong>{% endif %}</small></li>
+          <br><small>Zpráva se objeví do pár sekund. Když nepřijde, telefon odebírá jiné téma, než je tady. Odběr smažte a přidejte znovu (nejjednodušší je přes QR kód).</small></li>
       </ol>
     </div>
-    <p class="note">Téma funguje jako heslo: kdo ho zná, vidí vaše notifikace. Nikomu ho neposílejte. SPZ do notifikací na telefon neposíláme. Kdyby se téma dostalo ven, vygenerujte si nové.</p>
-    <div class="row">
-      <form method="post" action="{{ url_for('main.enable_push') }}" class="inline">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <button class="btn small quiet">Vygenerovat nové téma</button>
-      </form>
-      <form method="post" action="{{ url_for('main.disable_push') }}" class="inline">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <button class="btn small danger">Vypnout</button>
-      </form>
-    </div>
+    <p class="note">Téma funguje jako heslo: kdo ho zná, vidí vaše notifikace, nikomu ho neposílejte. SPZ na telefon neposíláme. Jen kdyby se téma dostalo k někomu cizímu, můžete si nechat vygenerovat nové. V telefonu ho pak musíte přidat znovu.</p>
+    <form method="post" action="{{ url_for('main.regenerate_push') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button class="btn small danger">Změnit téma</button>
+    </form>
   {% endif %}
 </section>
 {% endblock %}

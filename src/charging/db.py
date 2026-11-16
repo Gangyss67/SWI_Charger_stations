@@ -10,9 +10,11 @@ from pathlib import Path
 from flask import current_app, g
 from werkzeug.security import generate_password_hash
 
+from .topics import new_push_topic
+
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
-SCHEMA_VERSION = 6  # PRAGMA user_version nastavuje schema.sql; 0/1 = C01, 2–4 = v0.2.x, 5 = outbox (C03),
-#                     6 = vozidla v profilu, stát SPZ, notifikace na telefon
+SCHEMA_VERSION = 7  # PRAGMA user_version nastavuje schema.sql; 0/1 = C01, 2–4 = v0.2.x, 5 = outbox (C03),
+#                     6 = vozidla v profilu, stát SPZ, notifikace na telefon, 7 = stálé téma + zapnuto/vypnuto
 MIN_MIGRATABLE_VERSION = 5  # z v5 umíme migrovat bez ztráty dat, starší DB jde do zálohy
 
 # 10 nabíječek, z toho 3 vysokorychlostní (jen pro BEV). DC 07 a HPC 08–10 (>= 50 kW)
@@ -68,18 +70,31 @@ def transaction(conn: sqlite3.Connection):
 
 
 def migrate(conn: sqlite3.Connection) -> None:
-    """v5 -> v6: jen přidává sloupce, data zůstávají. Nové tabulky a indexy pak založí schema.sql
-    (CREATE ... IF NOT EXISTS), který nastaví i user_version = 6."""
+    """v5 -> v6 -> v7: jen přidává sloupce, data zůstávají. Nové tabulky a indexy pak založí schema.sql
+    (CREATE ... IF NOT EXISTS), který nastaví i user_version."""
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     has_tables = conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'reservations'").fetchone()
-    if has_tables is None or version != 5:
+    if has_tables is None or not MIN_MIGRATABLE_VERSION <= version < SCHEMA_VERSION:
         return
     with transaction(conn):
-        conn.execute(
-            "ALTER TABLE reservations ADD COLUMN plate_country TEXT NOT NULL DEFAULT 'CZ'"
-            " CHECK (length(plate_country) BETWEEN 1 AND 3)"
-        )
-        conn.execute("ALTER TABLE users ADD COLUMN push_topic TEXT")
+        if version == 5:  # v6: stát SPZ, téma pro notifikace na telefon
+            conn.execute(
+                "ALTER TABLE reservations ADD COLUMN plate_country TEXT NOT NULL DEFAULT 'CZ'"
+                " CHECK (length(plate_country) BETWEEN 1 AND 3)"
+            )
+            conn.execute("ALTER TABLE users ADD COLUMN push_topic TEXT")
+            version = 6
+        if version == 6:  # v7: zapnutí posílání je zvlášť, téma zůstává stálé
+            conn.execute(
+                "ALTER TABLE users ADD COLUMN push_enabled INTEGER NOT NULL DEFAULT 0 CHECK (push_enabled IN (0, 1))"
+            )
+            conn.execute("UPDATE users SET push_enabled = 1 WHERE push_topic IS NOT NULL")
+
+
+def assign_push_topics(conn: sqlite3.Connection) -> None:
+    """Každý uživatel má stálé téma pro notifikace na telefon – doplní ho těm, kteří ho ještě nemají."""
+    for (user_id,) in conn.execute("SELECT id FROM users WHERE push_topic IS NULL").fetchall():
+        conn.execute("UPDATE users SET push_topic = ? WHERE id = ? AND push_topic IS NULL", (new_push_topic(), user_id))
 
 
 def init_schema(conn: sqlite3.Connection, seed_demo_users: bool = True) -> None:
@@ -100,6 +115,7 @@ def init_schema(conn: sqlite3.Connection, seed_demo_users: bool = True) -> None:
                         " VALUES (?, ?, ?, ?, ?)",
                         (username, generate_password_hash(password), vehicle_type, is_admin, now),
                     )
+        assign_push_topics(conn)
 
 
 def get_db() -> sqlite3.Connection:

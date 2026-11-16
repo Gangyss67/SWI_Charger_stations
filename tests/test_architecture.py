@@ -38,7 +38,7 @@ def test_reservation_logic_does_not_depend_on_notification_service():
 def test_only_dispatcher_calls_notification_service():
     """Události (reservation_approved, slot_released, ...) na Notification Service volá jen OutboxDispatcher."""
     events = {"reservation_approved", "reservation_rejected", "reservation_cancelled_by_admin", "reservation_expired",
-              "slot_released"}
+              "slot_released", "approval_requested"}
     callers = set()
     for path in SRC.rglob("*.py"):
         if path.name == "notifications.py":

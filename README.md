@@ -60,11 +60,21 @@ V **Profil** si uživatel uloží svá auta (název, typ BEV/PHEV, stát a SPZ).
 SPZ se kontroluje podle státu ([src/charging/services/plates.py](src/charging/services/plates.py)): česká běžná `1AB 2345` (druhý znak je kód kraje), elektromobil `EL 123AB`, značka na přání 5–8 písmen a číslic (aspoň jedna číslice). U SK, PL, D, A, H jen obecně (písmena, číslice, mezera, pomlčka).
 
 **Notifikace na telefon** jdou přes [ntfy](https://ntfy.sh) – open-source push službu s aplikací pro Android i iPhone, bez registrace a bez API klíče:
-1. V Profilu klikněte na *Zapnout notifikace na telefon*. Aplikace vygeneruje náhodné téma ve tvaru `voltbook-xxxx-xxxx-xxxx` (funguje jako heslo).
+1. Každý účet má **jedno stálé téma** ve tvaru `voltbook-xxxx-xxxx-xxxx` (funguje jako heslo), v Profilu si zapnete posílání. Zapnutí ani vypnutí téma nemění.
 2. Naskenujte telefonem **QR kód** z Profilu. Otevře se stránka tématu na ntfy, kde povolíte notifikace. Nebo si nainstalujte aplikaci **ntfy** (Google Play, F-Droid, App Store), klepněte na **+** a opište téma (jen malá písmena a číslice).
 3. Tlačítkem *Poslat zkušební notifikaci* si to ověřte. Když nepřijde, telefon odebírá jiné téma – smažte odběr a přidejte ho znovu.
 
-Na telefon pak přijde totéž co do Notifikací v aplikaci (schválení, zamítnutí, zrušení adminem, propadlá žádost, uvolněné stání), jen bez SPZ. Server nastavuje proměnná `NTFY_URL` (výchozí `https://ntfy.sh`, může to být i vlastní ntfy server, prázdná hodnota = funkce vypnutá).
+Na telefon pak přijde totéž co do Notifikací v aplikaci, jen bez SPZ:
+
+| Kdy | Kdo dostane zprávu |
+| --- | --- |
+| řidič potvrdí rezervaci DC/HPC (nová žádost) | všichni administrátoři kromě žadatele |
+| admin žádost schválí / zamítne | žadatel |
+| o žádosti nikdo nerozhodne do T_start − 15 min | žadatel |
+| admin zruší cizí rezervaci | vlastník |
+| uvolní se slot | vlastníci návrhů na stejném stání a řidiči na slabším stání ve stejném čase |
+
+Nechodí při vytvoření návrhu, potvrzení na AC stání ani při vlastním zrušení. Server nastavuje proměnná `NTFY_URL` (výchozí `https://ntfy.sh`, může to být i vlastní ntfy server, prázdná hodnota = funkce vypnutá).
 
 ## Testy
 
@@ -93,7 +103,7 @@ Smoke test po spuštění `run.py`: <http://127.0.0.1:5000/login> vrátí přihl
 - **BR-03:** uživatel ruší `CONFIRMED` nejpozději 30 min před začátkem, admin kdykoliv před koncem; žádost `PENDING_APPROVAL` lze stáhnout kdykoliv.
 - **BR-04 (domain rule):** HPC nabíječky smí rezervovat pouze BEV, ne plug-in hybrid – služba i DB trigger.
 - **BR-05 / BR-06:** `DRAFT` propadá po 5 min; o žádosti DC/HPC (≥ 50 kW) musí admin rozhodnout do `T_start − 15 min`, jinak `EXPIRED`.
-- **Boundary:** Notification Service – výsledek schválení/zamítnutí, zrušení administrátorem, uvolněný (výkonnější) slot, od C09 i propadlá žádost (CR-08). Od C03 jdou události přes outbox (ADR-01): doručují se po každém POST, nedoručené zkusí znovu `scripts/dispatch_notifications.py`.
+- **Boundary:** Notification Service – výsledek schválení/zamítnutí, zrušení administrátorem, uvolněný (výkonnější) slot, od C09 i propadlá žádost (CR-08), z QoL nová žádost administrátorům. Od C03 jdou události přes outbox (ADR-01): doručují se po každém POST, nedoručené zkusí znovu `scripts/dispatch_notifications.py`.
 
 ## HTTP rozhraní
 
@@ -169,6 +179,7 @@ src/charging/
   services/plates.py            kontrola a sjednocení SPZ podle státu
   services/vehicles.py          profil vozidel uživatele
   qr.py                         QR kód (SVG) pro nastavení notifikací na telefonu, bez knihovny
+  topics.py                     stálé téma pro notifikace na telefon (ntfy)
   static/timeline.js            výběr termínu tažením na časové ose stání
   templates/, static/
 scripts/spike_persistence.py    C01 spike A – persistence

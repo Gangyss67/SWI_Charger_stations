@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import logging
 import re
-import secrets
 import sqlite3
 import threading
 import urllib.request
@@ -22,6 +21,7 @@ from datetime import datetime
 from typing import Callable, Protocol
 
 from ..db import transaction
+from ..topics import new_push_topic
 from ..timeutil import format_dt, format_range, format_ts
 
 logger = logging.getLogger(__name__)
@@ -61,7 +61,8 @@ def ntfy_send(url: str, text: str) -> None:
 
 
 class PushChannel:
-    """Kopie zprávy na telefon pro uživatele, kteří si v profilu zapnuli notifikace (users.push_topic).
+    """Kopie zprávy na telefon pro uživatele, kteří si v profilu zapnuli notifikace (users.push_enabled)
+    – posílá se na jejich stálé téma (users.push_topic).
 
     Hlavní kanál zůstává in-app schránka (DatabaseChannel), která jde přes outbox a neztratí se (ADR-01).
     Push je navíc a posílá se jen jednou: když ntfy nejede, chyba se zaloguje a zpráva v aplikaci zůstane.
@@ -80,9 +81,10 @@ class PushChannel:
     def send(self, user_id: int, message: str) -> None:
         if not self.base_url:
             return
-        topic = get_push_topic(self.conn, user_id)
-        if topic is None:
+        row = self.conn.execute("SELECT push_topic, push_enabled FROM users WHERE id = ?", (user_id,)).fetchone()
+        if row is None or not row["push_enabled"] or not row["push_topic"]:
             return
+        topic = row["push_topic"]
         args = (user_id, f"{self.base_url}/{topic}", _PLATE_IN_MESSAGE.sub("", message))
         if self.background:
             threading.Thread(target=self._deliver, args=args, name="push").start()
@@ -116,31 +118,42 @@ def build_channel(conn: sqlite3.Connection, clock: Callable[[], datetime], confi
 
 
 def get_push_topic(conn: sqlite3.Connection, user_id: int) -> str | None:
+    """Stálé téma uživatele. Kdo ho ještě nemá (účet založený jinou cestou), dostane ho teď – jednou."""
     row = conn.execute("SELECT push_topic FROM users WHERE id = ?", (user_id,)).fetchone()
-    return row["push_topic"] if row else None
+    if row is None:
+        return None
+    if row["push_topic"] is None:
+        with transaction(conn):
+            conn.execute("UPDATE users SET push_topic = ? WHERE id = ? AND push_topic IS NULL", (new_push_topic(), user_id))
+        row = conn.execute("SELECT push_topic FROM users WHERE id = ?", (user_id,)).fetchone()
+    return row["push_topic"]
 
 
-# Téma se opisuje do telefonu a ntfy rozlišuje velikost písmen, proto jen malá písmena a číslice
-# bez záměnných znaků (l/1, o/0, i) ve skupinách po 4: "voltbook-k7m3-q9xp-h2td". 31^12 ≈ 2^59 možností.
-_TOPIC_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"
-
-
-def new_push_topic() -> str:
-    groups = ("".join(secrets.choice(_TOPIC_ALPHABET) for _ in range(4)) for _ in range(3))
-    return "voltbook-" + "-".join(groups)
+def is_push_enabled(conn: sqlite3.Connection, user_id: int) -> bool:
+    row = conn.execute("SELECT push_enabled FROM users WHERE id = ?", (user_id,)).fetchone()
+    return bool(row and row["push_enabled"])
 
 
 def enable_push(conn: sqlite3.Connection, user_id: int) -> str:
-    """Vygeneruje nové náhodné téma (funguje jako heslo k odběru – kdo ho zná, vidí zprávy)."""
-    topic = new_push_topic()
+    """Zapne posílání na telefon. Téma se nemění – v telefonu stačí přidat jednou."""
+    topic = get_push_topic(conn, user_id)
     with transaction(conn):
-        conn.execute("UPDATE users SET push_topic = ? WHERE id = ?", (topic, user_id))
+        conn.execute("UPDATE users SET push_enabled = 1 WHERE id = ?", (user_id,))
     return topic
 
 
 def disable_push(conn: sqlite3.Connection, user_id: int) -> None:
+    """Vypne posílání, téma zůstává – po opětovném zapnutí chodí zprávy na totéž téma."""
     with transaction(conn):
-        conn.execute("UPDATE users SET push_topic = NULL WHERE id = ?", (user_id,))
+        conn.execute("UPDATE users SET push_enabled = 0 WHERE id = ?", (user_id,))
+
+
+def regenerate_push_topic(conn: sqlite3.Connection, user_id: int) -> str:
+    """Nové téma jen na výslovnou žádost – když staré zná někdo cizí (téma funguje jako heslo k odběru)."""
+    topic = new_push_topic()
+    with transaction(conn):
+        conn.execute("UPDATE users SET push_topic = ? WHERE id = ?", (topic, user_id))
+    return topic
 
 
 def _describe(res: dict) -> str:
@@ -164,6 +177,17 @@ class NotificationService:
             f"Vaše žádost {_describe(res)} byla zamítnuta administrátorem. "
             f"Termín je znovu volný, zvolte jiný čas nebo stanici.",
         )
+
+    def approval_requested(self, res: dict) -> None:
+        """Nová žádost na DC/HPC čeká na schválení -> všem administrátorům (kromě žadatele, když je sám admin)."""
+        deadline = res["approval_deadline"]
+        admins = self.conn.execute("SELECT id FROM users WHERE is_admin = 1 AND id <> ?", (res["user_id"],)).fetchall()
+        for admin in admins:
+            self.channel.send(
+                admin["id"],
+                f"Nová žádost ke schválení {_describe(res)}. "
+                f"Rozhodněte nejpozději {deadline[8:10]}.{deadline[5:7]}. v {deadline[11:16]}, jinak propadne.",
+            )
 
     def reservation_expired(self, res: dict) -> None:
         """CR-08: o žádosti nikdo nerozhodl do T_start − 15 min (BR-06)."""

@@ -194,7 +194,7 @@ def test_push_goes_to_users_topic_without_license_plate(conn, users, ntfy):
     rid = pending_request(svc, users)
     topic = notifications.enable_push(conn, users["ev"])
     svc.approve(users["admin"], rid)
-    assert dispatch(conn, ntfy) == 1
+    assert dispatch(conn, ntfy) == 2  # approval_requested (admin push nemá) + reservation_approved
     [(url, text)] = ntfy.sent
     assert url == f"https://ntfy.example/{topic}"
     # téma se opisuje do telefonu: jen malá písmena a číslice bez záměnných znaků, skupiny po 4
@@ -211,10 +211,10 @@ def test_push_failure_is_logged_and_in_app_message_still_delivered(conn, users, 
     svc.approve(users["admin"], rid)
     ntfy.fail = True
     with caplog.at_level(logging.WARNING, logger="charging.services.notifications"):
-        assert dispatch(conn, ntfy) == 1  # událost je doručená do aplikace
+        assert dispatch(conn, ntfy) == 2  # události jsou doručené do aplikace
     assert "TimeoutError" in caplog.text
     assert len(notifications.list_for_user(conn, users["ev"])) == 1
-    assert conn.execute("SELECT sent_at FROM outbox").fetchone()[0] is not None
+    assert all(row[0] is not None for row in conn.execute("SELECT sent_at FROM outbox"))
 
 
 def test_ntfy_send_makes_real_http_post(tmp_path):
@@ -245,20 +245,25 @@ def test_no_push_without_topic_or_without_server(conn, users, ntfy):
     svc = ReservationService(conn, FakeClock(at(8)))
     rid = pending_request(svc, users)
     svc.approve(users["admin"], rid)
-    assert dispatch(conn, ntfy) == 1 and ntfy.sent == []  # uživatel push nezapnul
+    assert dispatch(conn, ntfy) == 2 and ntfy.sent == []  # nikdo push nezapnul
     notifications.enable_push(conn, users["ev"])
     PushChannel(conn, "", ntfy, background=False).send(users["ev"], "zpráva")
     assert ntfy.sent == []  # server bez NTFY_URL
+    topic = notifications.get_push_topic(conn, users["ev"])
     notifications.disable_push(conn, users["ev"])
-    assert notifications.get_push_topic(conn, users["ev"]) is None
+    assert not notifications.is_push_enabled(conn, users["ev"])
+    assert notifications.get_push_topic(conn, users["ev"]) == topic  # téma je stálé, vypnutí ho nemaže
+    assert notifications.enable_push(conn, users["ev"]) == topic
+    assert notifications.regenerate_push_topic(conn, users["ev"]) != topic  # nové jen na výslovnou žádost
 
 
 def test_web_enable_push_test_message_and_approval_reaches_phone(client, app, ntfy):
     as_ev(client)
     client.post("/profile/push/enable", data={"csrf_token": TOKEN})
-    [user] = db_rows(app, "SELECT push_topic FROM users WHERE username = 'ridic_ev'")
+    [user] = db_rows(app, "SELECT push_topic, push_enabled FROM users WHERE username = 'ridic_ev'")
+    assert user["push_enabled"] == 1
     page = client.get("/profile").get_data(as_text=True)
-    assert user["push_topic"] in page and "Zapnuto" in page
+    assert user["push_topic"] in page and "Posílání zapnuto" in page
     assert '<svg xmlns="http://www.w3.org/2000/svg"' in page and 'class="qr"' in page  # QR kód s odkazem na téma
     client.post("/profile/push/test", data={"csrf_token": TOKEN})
     assert ntfy.sent[-1] == (f"https://ntfy.example/{user['push_topic']}", "Zkušební notifikace z VoltBooku. "
@@ -273,7 +278,10 @@ def test_web_enable_push_test_message_and_approval_reaches_phone(client, app, nt
 
     as_ev(client)
     client.post("/profile/push/disable", data={"csrf_token": TOKEN})
-    assert db_rows(app, "SELECT push_topic FROM users WHERE username = 'ridic_ev'")[0][0] is None
+    assert tuple(db_rows(app, "SELECT push_topic, push_enabled FROM users WHERE username = 'ridic_ev'")[0]) == (
+        user["push_topic"], 0)  # vypnuto, ale téma zůstává
+    client.post("/profile/push/regenerate", data={"csrf_token": TOKEN})
+    assert db_rows(app, "SELECT push_topic FROM users WHERE username = 'ridic_ev'")[0][0] != user["push_topic"]
 
 
 def test_web_push_disabled_on_server(tmp_path, clock):
@@ -282,7 +290,7 @@ def test_web_push_disabled_on_server(tmp_path, clock):
     as_ev(client)
     page = client.post("/profile/push/enable", data={"csrf_token": TOKEN}, follow_redirects=True).get_data(as_text=True)
     assert "nejsou na tomto serveru zapnuté" in page
-    assert db_rows(app, "SELECT push_topic FROM users WHERE username = 'ridic_ev'")[0][0] is None
+    assert db_rows(app, "SELECT push_enabled FROM users WHERE username = 'ridic_ev'")[0][0] == 0
 
 
 def test_profile_requires_login(client):
@@ -301,7 +309,7 @@ def test_migration_from_v5_keeps_data(tmp_path, clock):
     rid = ReservationService(conn, clock).create(uid, AC01, at(10), 1, "BEV", "1AB 2345")
     # DB vrátíme do tvaru verze 5 (před vylepšením)
     conn.executescript("""
-        DROP INDEX idx_users_push_topic; DROP TABLE vehicles;
+        DROP INDEX idx_users_push_topic; DROP TABLE vehicles; ALTER TABLE users DROP COLUMN push_enabled;
         ALTER TABLE users DROP COLUMN push_topic; ALTER TABLE reservations DROP COLUMN plate_country;
         PRAGMA user_version = 5;""")
     conn.close()
@@ -309,12 +317,50 @@ def test_migration_from_v5_keeps_data(tmp_path, clock):
     assert retire_outdated_database(path) is None  # v5 se nezálohuje, ale převede
     conn = connect(path)
     init_schema(conn, seed_demo_users=False)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 6
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 7
     row = conn.execute("SELECT id, license_plate, plate_country FROM reservations").fetchone()
     assert tuple(row) == (rid, "1AB 2345", "CZ")
     assert VehicleService(conn).add(uid, "Tesla", "BEV", "1AB 2345")
-    assert notifications.get_push_topic(conn, uid) is None
+    topic = conn.execute("SELECT push_topic FROM users WHERE id = ?", (uid,)).fetchone()[0]
+    assert re.fullmatch(r"voltbook-[a-z2-9]{4}-[a-z2-9]{4}-[a-z2-9]{4}", topic)  # stálé téma přidělené migrací
+    assert not notifications.is_push_enabled(conn, uid)
     conn.close()
+
+
+def test_migration_from_v6_keeps_topic_and_turns_push_on(tmp_path):
+    """Kdo měl ve v6 téma, měl push zapnutý – ve v7 ho má zapnutý dál a téma se nemění."""
+    path = str(tmp_path / "v6.db")
+    conn = connect(path)
+    init_schema(conn, seed_demo_users=False)
+    uid = make_user(conn, "stary", "BEV")
+    conn.execute("UPDATE users SET push_topic = 'voltbook-Stare_Tema' WHERE id = ?", (uid,))
+    conn.executescript("ALTER TABLE users DROP COLUMN push_enabled; PRAGMA user_version = 6;")
+    conn.close()
+    conn = connect(path)
+    init_schema(conn, seed_demo_users=False)
+    assert notifications.is_push_enabled(conn, uid)
+    assert notifications.get_push_topic(conn, uid) == "voltbook-Stare_Tema"
+    conn.close()
+
+
+# ------------------------------------------------------------------ notifikace adminovi o nových žádostech
+
+
+def test_admin_gets_message_about_new_request_but_not_about_ac_or_own_request(conn, users, ntfy):
+    svc = ReservationService(conn, FakeClock(at(8)))
+    rid = pending_request(svc, users)  # ridic potvrdí HPC 08 -> žádost
+    ac = svc.create(users["ev"], AC01, at(11), 1, "BEV", "1AB 2345")
+    svc.confirm(users["ev"], ac)  # AC -> rovnou CONFIRMED, admin nic nedostane
+    own = svc.create(users["admin"], HPC08, at(12), 1, "BEV", "2AB 3456")
+    svc.confirm(users["admin"], own)  # vlastní žádost admina -> sám sobě nic
+    notifications.enable_push(conn, users["admin"])
+    dispatch(conn, ntfy)
+    admin_msgs = [m["message"] for m in notifications.list_for_user(conn, users["admin"])]
+    assert len(admin_msgs) == 1
+    assert admin_msgs[0].startswith(f"Nová žádost ke schválení #{rid} (HPC 08") and "15.09. v 09:45" in admin_msgs[0]
+    assert notifications.list_for_user(conn, users["ev"]) == []  # žadatel o vlastní žádosti zprávu nedostane
+    [(url, text)] = ntfy.sent  # a adminovi i na telefon, bez SPZ
+    assert "Nová žádost ke schválení" in text and "SPZ" not in text
 
 
 # ------------------------------------------------------------------ výběr termínu na časové ose

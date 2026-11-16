@@ -529,6 +529,8 @@ class ReservationService:
                 "UPDATE reservations SET state = ?, approval_deadline = ?, updated_at = ? WHERE id = ?",
                 (PENDING_APPROVAL, format_ts(decision.approval_deadline), format_ts(now), reservation_id),
             )
+            # QoL: administrátor se o nové žádosti dozví hned (ADR-01: událost ve stejné transakci)
+            self._emit("approval_requested", reservation=self.get_reservation(reservation_id))
         else:
             self._set_state(reservation_id, CONFIRMED, now)
 

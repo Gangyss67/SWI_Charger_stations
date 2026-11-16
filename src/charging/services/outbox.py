@@ -68,7 +68,7 @@ class OutboxDispatcher:
                 exclude_user_id=payload["exclude_user_id"],
             )
         elif event in ("reservation_approved", "reservation_rejected", "reservation_cancelled_by_admin",
-                       "reservation_expired"):
+                       "reservation_expired", "approval_requested"):
             getattr(self.notifier, event)(payload["reservation"])
         else:
             raise ValueError(f"Neznámá událost {event}")

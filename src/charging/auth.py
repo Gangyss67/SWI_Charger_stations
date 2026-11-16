@@ -12,6 +12,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from .db import get_db
 from .services.reservations import VEHICLE_BEV, VEHICLE_PHEV
 from .timeutil import format_ts
+from .topics import new_push_topic
 
 bp = Blueprint("auth", __name__)
 
@@ -82,9 +83,10 @@ def register():
         if error is None:
             try:
                 get_db().execute(
-                    "INSERT INTO users (username, password_hash, vehicle_type, is_admin, created_at)"
-                    " VALUES (?, ?, ?, 0, ?)",
-                    (username, generate_password_hash(password), vehicle_type, format_ts(datetime.now())),
+                    "INSERT INTO users (username, password_hash, vehicle_type, is_admin, created_at, push_topic)"
+                    " VALUES (?, ?, ?, 0, ?, ?)",  # stálé téma pro notifikace na telefon se přidělí hned
+                    (username, generate_password_hash(password), vehicle_type, format_ts(datetime.now()),
+                     new_push_topic()),
                 )
             except sqlite3.IntegrityError:
                 error = "Toto uživatelské jméno je již obsazené."

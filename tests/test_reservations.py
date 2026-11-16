@@ -546,8 +546,10 @@ def test_released_dc_slot_notifies_phev_on_weaker_station(svc, conn, users):
     assert any("DC 07 (50 kW)" in m for m in messages_for(conn, users["phev"]))
 
 
-def outbox(conn):
-    return conn.execute("SELECT * FROM outbox ORDER BY id").fetchall()
+def outbox(conn, *events):
+    """Události v outboxu, případně jen zadaných typů (od QoL vzniká i approval_requested pro admina)."""
+    rows = conn.execute("SELECT * FROM outbox ORDER BY id").fetchall()
+    return [r for r in rows if not events or r["event"] in events]
 
 
 class BrokenNotifier:
@@ -561,23 +563,24 @@ class BrokenNotifier:
 def test_adr01_event_is_written_in_same_transaction_and_delivered_later(svc, conn, users):
     rid = pending(svc, users, "ev", HPC08, at(10), 1)
     svc.approve(users["admin"], rid)
-    [event] = outbox(conn)
+    [event] = outbox(conn, "reservation_approved")
     assert event["event"] == "reservation_approved" and event["sent_at"] is None
     assert json.loads(event["payload"])["reservation"]["id"] == rid
     assert notifications.list_for_user(conn, users["ev"]) == []  # ještě nedoručeno
-    assert deliver(conn) == 1
-    assert outbox(conn)[0]["sent_at"] is not None
+    assert deliver(conn) == 2  # approval_requested (adminovi) + reservation_approved
+    assert all(e["sent_at"] is not None for e in outbox(conn))
     assert any("byla schválena" in m for m in messages_for(conn, users["ev"]))
 
 
 def test_adr01_rolled_back_operation_writes_no_event(svc, conn, users):
     rid = pending(svc, users, "ev", HPC08, at(10), 1)
+    before = [tuple(e) for e in outbox(conn)]  # jen approval_requested ze vzniku žádosti
     with pytest.raises(PermissionDeniedError):
         svc.approve(users["ev2"], rid)  # ne-admin -> ROLLBACK
     other = draft(svc, users, "ev2", HPC08, at(10), 1)
     with pytest.raises(ConflictError):
         svc.confirm(users["ev2"], other)
-    assert outbox(conn) == []
+    assert [tuple(e) for e in outbox(conn)] == before
 
 
 def test_adr01_notification_failure_keeps_event_for_retry(svc, conn, users):
@@ -586,11 +589,11 @@ def test_adr01_notification_failure_keeps_event_for_retry(svc, conn, users):
     assert state(conn, rid) == CONFIRMED  # business změna platí i při výpadku Notification Service
 
     assert deliver(conn, BrokenNotifier()) == 0
-    [event] = outbox(conn)
+    [event] = outbox(conn, "reservation_approved")
     assert event["sent_at"] is None and event["attempts"] == 1 and "TimeoutError" in event["last_error"]
     assert notifications.list_for_user(conn, users["ev"]) == []
 
-    assert deliver(conn) == 1  # další pokus už projde
+    assert deliver(conn) == 2  # další pokus už projde (i approval_requested pro admina)
     assert any("byla schválena" in m for m in messages_for(conn, users["ev"]))
     assert deliver(conn) == 0  # nedoručuje se dvakrát
 
@@ -601,11 +604,11 @@ def test_adr01_event_over_attempt_limit_is_not_lost_and_script_delivers_it(svc, 
     svc.approve(users["admin"], rid)
     for _ in range(MAX_ATTEMPTS):
         assert deliver(conn, BrokenNotifier()) == 0
-    assert outbox(conn)[0]["attempts"] == MAX_ATTEMPTS
+    assert outbox(conn, "reservation_approved")[0]["attempts"] == MAX_ATTEMPTS
     assert deliver(conn) == 0  # dispatch po POST ji přeskočí
     script = OutboxDispatcher(conn, notifications.NotificationService(conn, notifications.DatabaseChannel(conn)))
-    assert len(script.pending(max_attempts=None)) == 1  # pořád čeká, neztratila se
-    assert script.dispatch(max_attempts=None) == 1  # jako scripts/dispatch_notifications.py
+    assert len(script.pending(max_attempts=None)) == 2  # pořád čeká (i approval_requested), neztratila se
+    assert script.dispatch(max_attempts=None) == 2  # jako scripts/dispatch_notifications.py
     assert any("byla schválena" in m for m in messages_for(conn, users["ev"]))
 
 
@@ -671,6 +674,6 @@ def test_cr08_ac04_expiry_holds_and_message_waits_when_notification_service_is_d
     assert check(svc, HPC08, at(10), 1)["available"] is True  # slot je uvolněný jako dřív (V6)
     assert deliver(conn, BrokenNotifier()) == 0
     assert state(conn, rid) == EXPIRED
-    [event] = outbox(conn)
+    [event] = outbox(conn, "reservation_expired")
     assert event["event"] == "reservation_expired" and event["sent_at"] is None and event["attempts"] == 1
     assert len(expiry_messages(conn, users["ev"])) == 1  # další pokus ji doručí

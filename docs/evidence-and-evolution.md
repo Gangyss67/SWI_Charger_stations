@@ -639,10 +639,11 @@ Vylepšení po C10, mimo zadání cvičení. Chtěli jsme, aby se aplikace použ
 | --- | --- | --- | --- | --- |
 | 1 | **Kontrola SPZ podle státu** | česká SPZ musí mít platný tvar: `1AB 2345` s existujícím kódem kraje, elektromobil `EL 123AB` nebo značka na přání. U chyby hláška proč (třeba „Kraj D v české SPZ neexistuje“). SPZ se sjednotí (`1ab2345` → `1AB 2345`). Zahraniční z SK, PL, D, A, H obecně. Na značce je kód státu v EU pruhu | `services/plates.py`, `ReservationService.create()`, sloupec `reservations.plate_country` | `test_plate_*` (15 případů), původní testy SPZ z C02 beze změny procházejí |
 | 2 | **Profil vozidel** | stránka *Profil*: uložit auto (název, typ, stát, SPZ), výchozí vozidlo, smazání. Při rezervaci se auto jen vybere, nebo „Jiné vozidlo…“ a ruční zadání. Na HPC stání nejde vybrat PHEV (BR-04) | `services/vehicles.py`, tabulka `vehicles`, `views.py` (`/profile`, `vehicle_id` v `POST /reservations`), `templates/profile.html` | `test_vehicles_*`, `test_web_profile_add_vehicle_and_reserve_with_it`, `test_web_invalid_plate_keeps_form_and_foreign_vehicle_is_404`, `test_phev_vehicle_from_profile_still_cannot_reserve_hpc` |
-| 3 | **Notifikace na telefon (ntfy)** | v Profilu tlačítko *Zapnout*, na telefon pak chodí totéž co do Notifikací (schválení, zamítnutí, zrušení adminem, propadlá žádost, uvolněné stání), bez SPZ. Tlačítka *Poslat zkušební notifikaci*, *Vygenerovat nové téma*, *Vypnout* | `PushChannel`, `MultiChannel`, `build_channel()` v `services/notifications.py`, `users.push_topic`, konfigurace `NTFY_URL` | `test_push_*`, `test_web_enable_push_test_message_and_approval_reaches_phone`, `test_ntfy_send_makes_real_http_post` (skutečný HTTP POST proti lokálnímu serveru), ruční běh proti ntfy.sh (viz níže) |
-| 4 | **QR kód a snadno opsatelné téma** | v Profilu QR kód, telefon ho načte fotoaparátem a otevře téma na ntfy. Téma je `voltbook-xxxx-xxxx-xxxx` (malá písmena a číslice), u starého tématu výzva vygenerovat nové | `qr.py` (vlastní generátor, bez knihovny), `new_push_topic()` | `tests/test_qr.py`: Reed-Solomon a formátové bity proti hodnotám z normy, zpětné přečtení QR; formát tématu v `test_push_goes_to_users_topic_without_license_plate` |
+| 3 | **Notifikace na telefon (ntfy), stálé téma** | každý účet má **jedno stálé téma** `voltbook-xxxx-xxxx-xxxx`, přidělené jednou a uložené v DB (`users.push_topic`). V Profilu se jen zapne nebo vypne posílání (`users.push_enabled`), téma se tím nemění, v telefonu se přidá jednou. Na telefon chodí totéž co do Notifikací v aplikaci, jen bez SPZ. Tlačítka *Poslat zkušební notifikaci* a *Změnit téma* (jen když ho zná někdo cizí) | `PushChannel`, `MultiChannel`, `build_channel()`, `get_push_topic()`/`enable_push()`/`disable_push()`/`regenerate_push_topic()` v `services/notifications.py`, `topics.py`, konfigurace `NTFY_URL` | `test_push_*`, `test_no_push_without_topic_or_without_server` (vypnutí téma nemaže, znovuzapnutí vrátí stejné), `test_web_enable_push_test_message_and_approval_reaches_phone`, `test_ntfy_send_makes_real_http_post` (skutečný HTTP POST proti lokálnímu serveru), ruční běh proti ntfy.sh (viz níže) |
+| 4 | **QR kód a snadno opsatelné téma** | v Profilu QR kód, telefon ho načte fotoaparátem a otevře téma na ntfy. Téma je `voltbook-xxxx-xxxx-xxxx` (malá písmena a číslice bez záměnných znaků) | `qr.py` (vlastní generátor, bez knihovny), `new_push_topic()` | `tests/test_qr.py`: Reed-Solomon a formátové bity proti hodnotám z normy, zpětné přečtení QR; formát tématu v `test_push_goes_to_users_topic_without_license_plate` |
 | 5 | **Výběr termínu tažením na časové ose** | na stránce stání se začátek a délka vyberou přímo na ose dne: myší tažením, na mobilu klepnutím na začátek a konec. Výběr je zvýrazněný a pod osou je „Vybráno 10:00–11:30 (1:30 h)“. Jde jen přes volné sloty, max. 4 h. Rozbalovací seznamy se synchronizují | `static/timeline.js`, `templates/station.html` | `tests/test_timeline_js.py` (logika výběru přes node, 10 případů), `test_station_timeline_is_ready_for_picking_by_drag` |
-| 6 | **Migrace DB bez ztráty dat** | stará DB (schéma 5) se při startu doplní na schéma 6, rezervace zůstanou. Dřív by se celá DB přesunula do zálohy | `db.migrate()`, `MIN_MIGRATABLE_VERSION` | `test_migration_from_v5_keeps_data`; naše lokální `instance/charging.db` se převedla i s daty z října |
+| 6 | **Migrace DB bez ztráty dat** | stará DB (schéma 5 nebo 6) se při startu doplní na schéma 7, rezervace zůstanou a každý uživatel dostane stálé téma. Kdo měl ve v6 push zapnutý, má ho dál a se stejným tématem. Dřív by se celá DB přesunula do zálohy | `db.migrate()`, `db.assign_push_topics()`, `MIN_MIGRATABLE_VERSION` | `test_migration_from_v5_keeps_data`, `test_migration_from_v6_keeps_topic_and_turns_push_on`; kopie naší lokální `instance/charging.db` (v6, 10 rezervací) se převedla na v7 bez ztráty dat |
+| 7 | **Notifikace adminovi o nových žádostech** | když řidič potvrdí rezervaci DC/HPC (vznikne žádost PENDING_APPROVAL), všichni administrátoři dostanou zprávu „Nová žádost ke schválení #… Rozhodněte nejpozději … v …“, v aplikaci i na telefon. Kdo žádost podal sám, zprávu nedostane | událost `approval_requested` v `ReservationService._apply_confirmation()` (outbox, ADR-01), `NotificationService.approval_requested()` | `test_admin_gets_message_about_new_request_but_not_about_ac_or_own_request`; testy outboxu z C03/C06/C09 upravené, aby hlídaly konkrétní událost |
 
 ## Notifikace na telefon nechodily – co jsme zjistili
 
@@ -652,13 +653,28 @@ Po prvním zapnutí na telefon nic nepřišlo. Postup:
 3. Na tématu `ridic_ev` na ntfy.sh **zkušební zpráva byla**. Aplikace tedy poslala správně, jen ji telefon neodebíral.
 4. Cesta pro skutečné události (schválení → outbox → dispatch po POST → push ve vlákně) proti skutečnému ntfy.sh taky funguje: zpráva „…byla schválena administrátorem…“ dorazila bez SPZ.
 
-Příčina: téma mělo 31 náhodných znaků s velkými i malými písmeny, `-` a `_` a ntfy rozlišuje velikost písmen. Do telefonu se opsalo jinak. Řešení je bod 4 v tabulce (QR kód, snadno opsatelné téma, návod, jak poznat špatné téma). Staré téma se automaticky nemění, v Profilu stačí kliknout na *Vygenerovat nové téma*.
+Příčina: téma mělo 31 náhodných znaků s velkými i malými písmeny, `-` a `_` a ntfy rozlišuje velikost písmen. Do telefonu se opsalo jinak. Navíc se při každém vypnutí a zapnutí generovalo nové téma, takže odběr v telefonu přestal sedět. Řešení jsou body 3 a 4 v tabulce: stálé téma pro každý účet, zapnout/vypnout jen přepíná posílání, QR kód, snadno opsatelný tvar a návod, jak poznat špatné téma.
+
+## Kdy chodí notifikace
+
+Stejná zpráva jde do Notifikací v aplikaci a (když je zapnuté posílání) na telefon. Všechny jdou přes outbox (ADR-01) a doručí se po nejbližším POST nebo skriptem `dispatch_notifications.py`.
+
+| Kdy | Kdo dostane zprávu | Událost |
+| --- | --- | --- |
+| řidič potvrdí rezervaci DC/HPC → vznikne žádost | **všichni administrátoři** (kromě žadatele) | `approval_requested` (QoL) |
+| admin žádost schválí | žadatel | `reservation_approved` (REQ-09) |
+| admin žádost zamítne | žadatel; uvolněný slot viz poslední řádek | `reservation_rejected` + `slot_released` (REQ-08, REQ-09) |
+| o žádosti nikdo nerozhodne do T_start − 15 min | žadatel | `reservation_expired` (CR-08) |
+| admin zruší cizí rezervaci nebo žádost | vlastník | `reservation_cancelled_by_admin` (REQ-06) |
+| uvolní se slot (zrušení, stažení žádosti, zamítnutí) | vlastníci návrhů (DRAFT) na stejném stání, které teď jde potvrdit; řidiči se souběžnou rezervací na slabším stání, kteří smí na uvolněné (HPC jen BEV) | `slot_released` (REQ-06) |
+
+Zpráva **nechodí** při vytvoření návrhu, potvrzení na AC stání, vlastním zrušení nebo stažení (o tom uživatel ví) ani při propadnutí návrhu po 5 minutách (BR-05).
 
 ## Ověření celkem
 
-- `python -m pytest` → **143 passed** (z toho 36 nových: `test_profile.py`, `test_qr.py`, `test_timeline_js.py`), `verify_c02.py` 14/14, `verify_c08.py` 29/29.
-- `measure_c04.py` po změnách backendu: K1–K3 splněno, p95 OP-03 301 ms.
-- CI na GitHubu pro první verzi vylepšení (`732ac38`): [běh 43844901991](https://github.com/Gangyss67/SWI_Charger_stations/actions/runs/43844901991) success.
+- `python -m pytest` → **145 passed** (z toho 38 nových: `test_profile.py`, `test_qr.py`, `test_timeline_js.py`), `verify_c02.py` 14/14, `verify_c08.py` 29/29.
+- `measure_c04.py`: po profilu a push K1–K3 splněno, p95 OP-03 301 ms; po přidání notifikací adminovi 348 a 357 ms (doručuje se víc zpráv po POST), kritérium ≤ 500 ms dál platí.
+- CI na GitHubu: [běh 43844901991](https://github.com/Gangyss67/SWI_Charger_stations/actions/runs/43844901991) (`732ac38`, profil, SPZ, push) a [běh 43848217071](https://github.com/Gangyss67/SWI_Charger_stations/actions/runs/43848217071) (`ab82802`, QR, výběr na ose) success.
 - Ručně přes HTTP proti běžící aplikaci: nevalidní SPZ → 400 s hláškou, výchozí vozidlo předvybrané, ruční pole skrytá, na HPC je PHEV vozidlo zablokované, zapnutí push vygeneruje téma.
 
 ## Co ověřené není
