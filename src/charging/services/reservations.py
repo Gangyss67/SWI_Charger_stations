@@ -7,7 +7,8 @@ Operace a přechody stavů:
   OP-04 Cancel Reservation   cancel()             CONFIRMED -> CANCELLED | CANCELLED_BY_ADMIN (BR-03)
                                                   PENDING_APPROVAL -> CANCELLED
   OP-05 Approve / Reject     approve(), reject()  PENDING_APPROVAL -> CONFIRMED | REJECTED
-  časové přechody            expire_overdue()     DRAFT | PENDING_APPROVAL -> EXPIRED (BR-05, BR-06)
+  časové přechody            expire_overdue()     DRAFT | PENDING_APPROVAL -> EXPIRED (BR-05, BR-06),
+                                                  u žádosti zpráva žadateli (CR-08)
 
 Události pro Notification Service se zapisují do tabulky outbox ve stejné transakci jako změna
 stavu (ADR-01). Doručuje je services/outbox.py – tato služba Notification Service vůbec nezná.
@@ -24,7 +25,7 @@ from contextlib import contextmanager
 from datetime import date, datetime, time, timedelta
 from typing import Callable
 
-from ..db import transaction, write_lock
+from ..db import transaction
 from .domain import (  # VEHICLE_* a stavy importují odsud i views.py a auth.py
     BLOCKING_STATES,
     CANCELLED,
@@ -205,11 +206,27 @@ class ReservationService:
         přejdou do EXPIRED a přestanou blokovat stanici.
 
         Baseline v0.2 nemá plánovač (architektonický driver pro C03), proto se přechod provádí
-        „líně“: jedním samostatně commitovaným UPDATE na začátku každé operace a dotazu.
+        „líně“: vlastní transakcí na začátku každé operace a dotazu.
         Musí běžet mimo otevřenou transakci, aby ho neodvolal rollback odmítnuté operace.
+
+        CR-08 (C09): u propadlé žádosti se ve stejné transakci zapíše do outboxu událost
+        reservation_expired, aby se žadatel dozvěděl, že o žádosti nikdo nerozhodl. Výběr a UPDATE
+        jsou v jedné transakci, takže dva souběžné requesty nepošlou zprávu dvakrát.
+        Když nic nepropadlo (běžný případ), transakce se vůbec neotevře – jinak by se zámek zápisu
+        bral u každého requestu a zhoršila by se doba odpovědi z C04 (zjištěno přeměřením v C09).
         """
         ts = format_ts(now or self.now())
-        with write_lock():
+        overdue = self.conn.execute(
+            "SELECT 1 FROM reservations WHERE (state = 'DRAFT' AND draft_expires_at < ?)"
+            " OR (state = 'PENDING_APPROVAL' AND approval_deadline < ?) LIMIT 1",
+            (ts, ts),
+        ).fetchone()
+        if overdue is None:
+            return 0
+        with transaction(self.conn):
+            requests = self.conn.execute(
+                "SELECT id FROM reservations WHERE state = 'PENDING_APPROVAL' AND approval_deadline < ?", (ts,)
+            ).fetchall()
             cur = self.conn.execute(
                 """
                 UPDATE reservations SET state = 'EXPIRED', updated_at = ?
@@ -218,6 +235,8 @@ class ReservationService:
                 """,
                 (ts, ts, ts),
             )
+            for row in requests:
+                self._emit("reservation_expired", reservation=self.get_reservation(row["id"]))
         return cur.rowcount
 
     # ------------------------------------------------------------------ dotazy

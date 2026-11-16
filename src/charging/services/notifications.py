@@ -6,7 +6,8 @@ Výchozí kanál ukládá zprávy do DB (in-app schránka); e-mail/SMS/push prov
 doplnit jako další implementaci NotificationChannel bez zásahu do doménové logiky.
 
 Napojení podle diagramu případů užití v0.2: OP-04 Cancel (uvolnění slotu, zrušení
-administrátorem) a OP-05 Approve / Reject (výsledek rozhodnutí žadateli).
+administrátorem) a OP-05 Approve / Reject (výsledek rozhodnutí žadateli). Od C09 (CR-08)
+i propadnutí žádosti podle BR-06.
 """
 from __future__ import annotations
 
@@ -53,6 +54,14 @@ class NotificationService:
             res["user_id"],
             f"Vaše žádost {_describe(res)} byla zamítnuta administrátorem. "
             f"Termín je znovu volný, zvolte jiný čas nebo stanici.",
+        )
+
+    def reservation_expired(self, res: dict) -> None:
+        """CR-08: o žádosti nikdo nerozhodl do T_start − 15 min (BR-06)."""
+        self.channel.send(
+            res["user_id"],
+            f"Vaše žádost {_describe(res)} propadla – administrátor o ní nerozhodl do {res['approval_deadline'][11:16]}. "
+            f"Termín pro vás neplatí, zvolte jiný čas nebo AC stanici.",
         )
 
     def reservation_cancelled_by_admin(self, res: dict) -> None:

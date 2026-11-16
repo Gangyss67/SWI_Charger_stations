@@ -1,0 +1,24 @@
+# C09 – CI: při každém push a PR nainstaluje závislosti a pustí testy + integrační kontroly přes HTTP.
+# Stejné příkazy jdou spustit lokálně, viz README (sekce Testy).
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Závislosti
+        run: python -m pip install -r requirements.txt
+      - name: Unit + component testy (pytest, skutečná SQLite v dočasném adresáři)
+        run: python -m pytest -v
+      - name: C02 příklady ověření přes HTTP
+        run: python scripts/verify_c02.py
+      - name: C08/C09 test casy TC-C08-01..03 přes HTTP + kontrola stavu v DB
+        run: python scripts/verify_c08.py

@@ -52,10 +52,15 @@ Typ vozidla u účtu je jen výchozí hodnota – typ vozu a SPZ se zadávají u
 ```powershell
 .\.venv\Scripts\python.exe -m pytest
 .\.venv\Scripts\python.exe scripts\verify_c02.py     # příklady ověření baseline v0.2 přes HTTP (exit 0 = OK)
-.\.venv\Scripts\python.exe scripts\verify_c08.py     # C08 – test casy TC-C08-01/02 přes HTTP + kontrola stavu přímo v DB (exit 0 = OK)
+.\.venv\Scripts\python.exe scripts\verify_c08.py     # C08/C09 – test casy TC-C08-01..03 přes HTTP + kontrola stavu přímo v DB (exit 0 = OK)
 .\.venv\Scripts\python.exe scripts\dispatch_notifications.py   # doručí nedoručené notifikace z outboxu
 .\.venv\Scripts\python.exe scripts\measure_c04.py    # C04 – měření souběžného potvrzování, cca 1 min (exit 0 = kritérium splněno)
 ```
+
+Testy si DB zakládají samy v dočasném adresáři (`verify_c02.py` v `instance/verify_c02.db`), nic dalšího se nastavovat nemusí.
+Smoke test po spuštění `run.py`: <http://127.0.0.1:5000/login> vrátí přihlašovací stránku.
+
+**CI (C09):** [.github/workflows/ci.yml](.github/workflows/ci.yml) při každém push a PR na GitHubu (Ubuntu, Python 3.14) nainstaluje `requirements.txt` a pustí `pytest`, `verify_c02.py` a `verify_c08.py` – stejné příkazy jako výše. `measure_c04.py` v CI není, na sdíleném stroji by čísla nic neříkala.
 
 ## Doména v kostce (baseline v0.2)
 
@@ -69,7 +74,7 @@ Typ vozidla u účtu je jen výchozí hodnota – typ vozu a SPZ se zadávají u
 - **BR-03:** uživatel ruší `CONFIRMED` nejpozději 30 min před začátkem, admin kdykoliv před koncem; žádost `PENDING_APPROVAL` lze stáhnout kdykoliv.
 - **BR-04 (domain rule):** HPC nabíječky smí rezervovat pouze BEV, ne plug-in hybrid – služba i DB trigger.
 - **BR-05 / BR-06:** `DRAFT` propadá po 5 min; o žádosti DC/HPC (≥ 50 kW) musí admin rozhodnout do `T_start − 15 min`, jinak `EXPIRED`.
-- **Boundary:** Notification Service – výsledek schválení/zamítnutí, zrušení administrátorem, uvolněný (výkonnější) slot. Od C03 jdou události přes outbox (ADR-01): doručují se po každém POST, nedoručené zkusí znovu `scripts/dispatch_notifications.py`.
+- **Boundary:** Notification Service – výsledek schválení/zamítnutí, zrušení administrátorem, uvolněný (výkonnější) slot, od C09 i propadlá žádost (CR-08). Od C03 jdou události přes outbox (ADR-01): doručují se po každém POST, nedoručené zkusí znovu `scripts/dispatch_notifications.py`.
 
 ## HTTP rozhraní
 
@@ -117,6 +122,7 @@ Spuštění jen těchto testů:
 ```
 README.md
 requirements.txt, pytest.ini, run.py
+.github/workflows/ci.yml        C09 – CI (pytest + verify_c02 + verify_c08)
 docs/
   intent-and-change.md          Project Frame + future pressure (C01), specifikace OP-01..OP-05,
                                 BR-01..BR-06, baseline v0.1 a v0.2 + dopad změny (C02), change request CR-08 (C08)
@@ -140,7 +146,7 @@ src/charging/
   templates/, static/
 scripts/spike_persistence.py    C01 spike A – persistence
 scripts/verify_c02.py           C02 – příklady ověření baseline v0.2 přes HTTP
-scripts/verify_c08.py           C08 – krokované test casy TC-C08-01/02 (BR-02)
+scripts/verify_c08.py           C08 – krokované test casy TC-C08-01/02 (BR-02), C09 – TC-C08-03 (CR-08)
 scripts/dispatch_notifications.py  C03 – opakované doručení notifikací z outboxu
 scripts/measure_c04.py          C04 – měření souběžného potvrzování (kritérium K1–K3)
 tests/                          pytest testy (test_architecture.py = pravidlo z ADR-01, test_confirmation_design.py = C05)

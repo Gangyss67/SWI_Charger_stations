@@ -489,7 +489,7 @@ V žádném stavu systému se nesmí dvě rezervace v blokujícím stavu – CON
 Pravidla pro CONFIRMED beze změny. Žádost ve stavu PENDING_APPROVAL smí vlastník i administrátor stáhnout kdykoliv před rozhodnutím; přechází do CANCELLED a uvolňuje stanici. Zrušení zachovává auditní stopu (soft delete).
 
 **BR-06 — Approval policy (nové)**
-Stanice s výkonem ≥ 50 kW (DC 07, HPC 08–10) vyžadují schválení administrátorem. Potvrzení (OP-03) na takové stanici vytvoří žádost PENDING_APPROVAL, pouze pokud T_now ≤ T_start − 15 min. O žádosti musí administrátor rozhodnout (OP-05) nejpozději v T_start − 15 min; když nerozhodne, žádost přechází do EXPIRED a stanice se uvolní. Lhůta 15 minut nechává čas oznámit žadateli výsledek před příjezdem ke stanici.
+Stanice s výkonem ≥ 50 kW (DC 07, HPC 08–10) vyžadují schválení administrátorem. Potvrzení (OP-03) na takové stanici vytvoří žádost PENDING_APPROVAL, pouze pokud T_now ≤ T_start − 15 min. O žádosti musí administrátor rozhodnout (OP-05) nejpozději v T_start − 15 min; když nerozhodne, žádost přechází do EXPIRED a stanice se uvolní. Lhůta 15 minut nechává čas oznámit žadateli výsledek před příjezdem ke stanici. *(Doplněno změnou CR-08, C08/C09:)* Při propadnutí žádosti dostane žadatel přes Notification Service zprávu, že o žádosti nikdo nerozhodl.
 
 BR-01, BR-04 a BR-05 platí beze změny podle v0.1.
 
@@ -530,6 +530,7 @@ Testy běží přes `python -m pytest` (soubor `tests/test_reservations.py`, pok
 | REQ-09 (OP-05) | notifikace v testech V4 a V5 výše, doručení přes outbox (od C03) `test_adr01_*` | V4, V5 |
 | BR-02 i mimo službu | `test_db_triggers_enforce_approval_policy_overlap_and_transitions` | – |
 | BR-05, BR-06 propadnutí | `test_br05_unconfirmed_draft_expires_without_any_operation`, `test_br06_undecided_request_expires_and_releases_slot` | V6 |
+| CR-08 zpráva o propadlé žádosti (C09) | `test_cr08_*` (5 testů, AC-01 až AC-04), `scripts/verify_c08.py` TC-C08-03 | – |
 
 ---
 
@@ -593,6 +594,8 @@ Od AC-01 jsme šli po kódu: kdo dělá přechod PENDING_APPROVAL → EXPIRED (`
 Reviewer: **DOPLNIT** (Š. Exner nebo D. Volný). Zpochybněný předpoklad: „stačí líné propadnutí“. V noci nebo ráno bez provozu vznikne zpráva až s prvním requestem, a doručí se až po prvním POST, klidně až po začátku rezervace. Odpověď: přes den, kdy se rezervuje nejvíc, requesty chodí často a zpráva přijde brzo. Spolehlivé načasování řeší varianta B a tu odkládáme (viz rozhodnutí).
 
 **Rozhodnutí:** ACCEPT varianta A. Owner J. Staněk, 16. 11. 2026. Důvod: splní AC s nejmenší změnou a nic nového se nemusí provozovat. Varianta B je DEFER: chybí stroj, kde by aplikace a plánovač běžely trvale. Znovu otevřeme, až aplikace poběží na serveru nebo když cvičící bude chtít zprávu i bez provozu.
+
+*Implementováno v C09 (tag `v0.9.0`), záznam o integraci a release je v [evidence-and-evolution.md](evidence-and-evolution.md), CV9.*
 
 **Předávka do C09 (nejmenší změna a testy):**
 

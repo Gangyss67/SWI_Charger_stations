@@ -48,7 +48,7 @@ SQLite (schema.sql)  ◄── OutboxDispatcher (services/outbox.py) ──► N
 
 ### D5 – Notification Service jako boundary za rozhraním
 *V CV2 nové události podle v0.2, v CV3 doručování přes outbox (ADR-01).*
-- **Rozhodnutí:** služba rezervací volá jen doménové události (`reservation_approved`, `reservation_rejected`, `reservation_cancelled_by_admin`, `slot_released`) – podle diagramu případů užití v0.2 je Notification Service napojena na OP-04 a OP-05. Kdo dostane zprávu, rozhoduje `NotificationService`; doručení zajišťuje `NotificationChannel` (dnes zápis do tabulky `notifications`).
+- **Rozhodnutí:** služba rezervací volá jen doménové události (`reservation_approved`, `reservation_rejected`, `reservation_cancelled_by_admin`, `slot_released`, od C09 i `reservation_expired` – CR-08) – podle diagramu případů užití v0.2 je Notification Service napojena na OP-04 a OP-05. Kdo dostane zprávu, rozhoduje `NotificationService`; doručení zajišťuje `NotificationChannel` (dnes zápis do tabulky `notifications`).
 - **Selhání boundary:** od C03 podle ADR-01 – služba událost jen zapíše do tabulky `outbox` ve stejné transakci, doručí ji `OutboxDispatcher`. Když doručení selže, událost zůstane v outboxu a zkusí se znovu; provedenou operaci to nezvrátí (test `test_adr01_notification_failure_keeps_event_for_retry`). Po 5 neúspěšných pokusech ji dispatch po POST už nezkouší, ale skript `scripts/dispatch_notifications.py` bere i tyhle, takže se zpráva neztratí (C06, F1, test `test_adr01_event_over_attempt_limit_is_not_lost_and_script_delivers_it`).
 - **slot_released:** po zrušení / stažení / zamítnutí blokující rezervace upozorní (1) vlastníky návrhů (DRAFT) na stejné stanici, které teď lze potvrdit, a (2) uživatele s rezervací ve stejném čase na slabší stanici, pokud smí uvolněnou stanici použít (HPC jen BEV podle typu vozu v rezervaci).
 
@@ -80,6 +80,7 @@ Stav slotu/stanice se nepersistuje, ale počítá z rezervací: **volná**, **č
 ### D7 – Časové přechody do EXPIRED provádíme „líně“ (dočasné řešení)
 - **Rozhodnutí:** `ReservationService.expire_overdue()` je jeden samostatně commitovaný `UPDATE`, který se volá na začátku každé operace a každého dotazu na dostupnost. Musí běžet mimo transakci operace, aby odmítnuté potvrzení (rollback) nevrátilo zápis EXPIRED.
 - **Důsledky:** bez provozu se EXPIRED zapíše až při nejbližším požadavku a k propadnutí žádosti se neposílá notifikace. Správné řešení (plánovač / worker) je architektonický driver pro C03.
+- *(C09, CR-08)* K propadnutí žádosti se už zpráva posílá: `expire_overdue()` ji zapíše do outboxu ve stejné transakci jako přechod do EXPIRED. Propadnutí je ale pořád líné, takže zpráva vznikne až s nejbližším requestem po lhůtě. Když nic nepropadlo, `expire_overdue()` transakci neotevírá (kvůli C04).
 
 ### D8 – Typ vozu a SPZ patří k rezervaci, ne jen k účtu
 - **Rozhodnutí:** podle OP-02 zadává uživatel typ vozu a SPZ u každé rezervace; typ vozu z profilu se jen předvyplní. BR-04 (HPC jen BEV) se vyhodnocuje nad typem vozu v rezervaci (služba i trigger).
@@ -357,7 +358,7 @@ Rezervace v kódu není třída, je to řádek tabulky `reservations` (v diagram
 ### D9 – Zápisy z jednoho procesu řadíme do fronty v aplikaci
 - **Kontext:** měření C04 (kritérium K1–K3 a výsledky jsou v [evidence-and-evolution.md](evidence-and-evolution.md)) ukázalo, že při 50 souběžných potvrzeních BR-02 drží a nic nepadá, ale p95 OP-03 je kolem 2 s místo nejvýš 500 ms. Každý request dělá dva zápisy (`expire_overdue()` a transakci operace), SQLite pouští jen jeden zápis najednou a čekající spojení uspává busy handler, který zkouší zámek znovu po 1–100 ms.
 - **Zvažované varianty:** WAL, WAL + `synchronous = NORMAL`, WAL + fronta zápisů, samotná fronta zápisů. Každou jsme změřili stejným skriptem `scripts/measure_c04.py`.
-- **Rozhodnutí:** `db.transaction()` a `expire_overdue()` berou před zápisem zámek procesu (`db.write_lock()`, `threading.RLock`). Vlákna jedné aplikace tak čekají ve frontě a busy timeout SQLite zůstává jen pro zápisy z jiného procesu (`scripts/dispatch_notifications.py`). Journal mode a `synchronous` necháváme výchozí.
+- **Rozhodnutí:** `db.transaction()` a `expire_overdue()` berou před zápisem zámek procesu (`db.write_lock()`, `threading.RLock`; od C09 jde `expire_overdue()` přes `transaction()` a samostatné `write_lock()` zaniklo). Vlákna jedné aplikace tak čekají ve frontě a busy timeout SQLite zůstává jen pro zápisy z jiného procesu (`scripts/dispatch_notifications.py`). Journal mode a `synchronous` necháváme výchozí.
 - **Důvod:** samotná fronta stáhla p95 OP-03 při 50 klientech z 1804–2216 ms na 272–332 ms. WAL k ní přidal jen málo (víc až při 100 klientech), ale přidává soubory `-wal` / `-shm`, záloha už není jeden soubor a na síťovém nebo synchronizovaném disku (repo i `instance/` máme v OneDrive) se nedoporučuje. `synchronous = NORMAL` by při výpadku proudu mohl ztratit poslední potvrzené rezervace a výsledek byl stejně na hraně limitu (384 a 507 ms).
 - **Přijaté negativní důsledky:**
   - fronta funguje jen uvnitř jednoho procesu; víc instancí aplikace by zase čekalo v SQLite,

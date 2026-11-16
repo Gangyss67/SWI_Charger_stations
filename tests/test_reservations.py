@@ -607,3 +607,70 @@ def test_adr01_event_over_attempt_limit_is_not_lost_and_script_delivers_it(svc, 
     assert len(script.pending(max_attempts=None)) == 1  # pořád čeká, neztratila se
     assert script.dispatch(max_attempts=None) == 1  # jako scripts/dispatch_notifications.py
     assert any("byla schválena" in m for m in messages_for(conn, users["ev"]))
+
+
+# ------------------------------------------------------------------ CR-08 zpráva o propadlé žádosti (C08 -> C09)
+
+
+def expiry_messages(conn, user_id):
+    return [m for m in messages_for(conn, user_id) if "propadla" in m]
+
+
+def test_cr08_ac01_expired_request_notifies_requester_exactly_once(svc, conn, users, clock):
+    rid = pending(svc, users, "ev", HPC09, at(10), 1)  # lhůta 09:45
+    clock.value = at(9, 46)
+    check(svc, HPC09, at(10), 1)  # propadnutí provede kterýkoli request (D7)
+    assert state(conn, rid) == EXPIRED
+    [msg] = expiry_messages(conn, users["ev"])
+    assert f"#{rid}" in msg
+    check(svc, HPC09, at(10), 1)  # další requesty už druhou zprávu nepošlou
+    svc.list_all()
+    assert len(expiry_messages(conn, users["ev"])) == 1
+
+
+def test_cr08_ac02_decided_or_withdrawn_request_and_expired_draft_get_no_expiry_message(svc, conn, users, clock):
+    approved = pending(svc, users, "ev", HPC08, at(10), 1)
+    rejected = pending(svc, users, "ev2", HPC09, at(10), 1)
+    withdrawn = pending(svc, users, "ev3", DC07, at(10), 1)
+    svc.approve(users["admin"], approved)
+    svc.reject(users["admin"], rejected)
+    svc.cancel(users["ev3"], withdrawn)
+    old_draft = draft(svc, users, "phev", AC01, at(10), 1)
+    clock.value = at(9, 46)  # lhůty žádostí i 5 min návrhu jsou pryč
+    svc.list_all()
+    assert [state(conn, r) for r in (approved, rejected, withdrawn, old_draft)] == [CONFIRMED, REJECTED, CANCELLED, EXPIRED]
+    assert all(expiry_messages(conn, uid) == [] for uid in users.values())
+
+
+def test_cr08_ac03_boundary_0945_no_message_094501_message(svc, conn, users, clock):
+    on_time = pending(svc, users, "ev", HPC08, at(10), 1)
+    late = pending(svc, users, "ev2", HPC09, at(10), 1)
+    clock.value = at(9, 45)  # hranice je ještě povolená (BR-06)
+    assert svc.approve(users["admin"], on_time) == CONFIRMED
+    assert state(conn, late) == PENDING_APPROVAL and expiry_messages(conn, users["ev2"]) == []
+    clock.value = at(9, 45, 1)
+    svc.list_for_user(users["ev2"])
+    assert state(conn, late) == EXPIRED
+    assert len(expiry_messages(conn, users["ev2"])) == 1
+    assert expiry_messages(conn, users["ev"]) == []
+
+
+def test_cr08_ac03_late_approve_is_rejected_and_requester_gets_expiry_not_approval(svc, conn, users, clock):
+    rid = pending(svc, users, "ev", HPC08, at(10), 2)
+    clock.value = at(9, 50)
+    with pytest.raises(InvalidStateError, match="propadla"):
+        svc.approve(users["admin"], rid)  # první request po lhůtě
+    msgs = messages_for(conn, users["ev"])
+    assert len([m for m in msgs if "propadla" in m]) == 1
+    assert not any("schválena" in m for m in msgs)
+
+
+def test_cr08_ac04_expiry_holds_and_message_waits_when_notification_service_is_down(svc, conn, users, clock):
+    rid = pending(svc, users, "ev", HPC08, at(10), 1)
+    clock.value = at(9, 46)
+    assert check(svc, HPC08, at(10), 1)["available"] is True  # slot je uvolněný jako dřív (V6)
+    assert deliver(conn, BrokenNotifier()) == 0
+    assert state(conn, rid) == EXPIRED
+    [event] = outbox(conn)
+    assert event["event"] == "reservation_expired" and event["sent_at"] is None and event["attempts"] == 1
+    assert len(expiry_messages(conn, users["ev"])) == 1  # další pokus ji doručí

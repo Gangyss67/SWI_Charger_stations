@@ -1,4 +1,5 @@
-"""C08 – krokované test casy TC-C08-01 a TC-C08-02 (BR-02, OP-03 / OP-05) přes HTTP rozhraní.
+"""C08 – krokované test casy TC-C08-01 a TC-C08-02 (BR-02, OP-03 / OP-05) přes HTTP rozhraní,
+od C09 i TC-C08-03 pro změnu CR-08 (zpráva žadateli o propadlé žádosti).
 
 Každý běh si založí novou izolovanou SQLite DB v dočasném adresáři (= reset), aplikaci spustí
 s řiditelnými hodinami ("teď" = 15.09.2026 08:00) a operace volá přes stejné endpointy jako
@@ -17,7 +18,7 @@ from verify_c02 import Clock, Session, register  # stejné přihlášení a CSRF
 
 from charging import create_app
 
-HPC08 = 8
+HPC08, HPC09 = 8, 9
 BLOCKING = "('CONFIRMED', 'PENDING_APPROVAL')"
 
 
@@ -61,7 +62,7 @@ class Report:
     def __init__(self):
         self.results = []
 
-    def step(self, no: int, action: str, expected: str, actual: str, ok: bool) -> None:
+    def step(self, no, action: str, expected: str, actual: str, ok: bool) -> None:
         self.results.append(ok)
         print(f"  {no}. {action}\n     očekáváno: {expected}\n     skutečně:  {actual}  [{'OK' if ok else 'FAIL'}]")
 
@@ -119,16 +120,68 @@ def tc02(workdir: Path, run: int, rep: Report) -> str:
     return f"{s1}/{s2} -> {r.status_code}, B2 {rows[1][3]}"
 
 
+def tc03(workdir: Path, run: int, rep: Report) -> str:
+    """TC-C08-03 (C09) – nové chování CR-08: propadlá žádost -> žadatel dostane právě jednu zprávu."""
+    def request_hpc09(env: Env) -> int:
+        rid = env.ev2.create(HPC09, "10:00", 1)
+        env.ev2.post(f"/reservations/{rid}/confirm")
+        return rid
+
+    def expiry_events(env: Env) -> list:
+        return env.read("SELECT sent_at FROM outbox WHERE event = 'reservation_expired'")
+
+    env = Env(workdir, f"tc03a_{run}")
+    b2 = request_hpc09(env)
+    row = env.read("SELECT state, approval_deadline FROM reservations WHERE id = ?", (b2,))[0]
+    rep.step(1, f"reset + ridic_ev2 potvrdí HPC 09 [10:00, 10:30) (#{b2})", "PENDING_APPROVAL, lhůta 09:45:00",
+             f"{row[0]}, lhůta {row[1][11:]}", tuple(row) == ("PENDING_APPROVAL", "2026-09-15 09:45:00"))
+    env.clock.value = datetime(2026, 9, 15, 9, 45, 0)
+    r = env.admin.post(f"/reservations/{b2}/approve")
+    st, events = env.read("SELECT state FROM reservations WHERE id = ?", (b2,))[0][0], expiry_events(env)
+    rep.step(2, "09:45:00 admin schválí (AC-03 hranice), pak čtení z DB", "200, B2 CONFIRMED, 0 událostí reservation_expired",
+             f"{r.status_code}, B2 {st}, událostí {len(events)}", (r.status_code, st, len(events)) == (200, "CONFIRMED", 0))
+
+    env = Env(workdir, f"tc03b_{run}")  # krok 3: reset na stejný výchozí stav
+    b2 = request_hpc09(env)
+    env.clock.value = datetime(2026, 9, 15, 9, 45, 1)
+    env.ev2.client.get("/reservations")  # běžný request, propadnutí je líné (D7)
+    st, events = env.read("SELECT state FROM reservations WHERE id = ?", (b2,))[0][0], expiry_events(env)
+    rep.step(3, "reset; 09:45:01 ridic_ev2 GET /reservations, pak čtení z DB",
+             "B2 EXPIRED, 1 událost reservation_expired (zatím nedoručená)",
+             f"B2 {st}, událostí {len(events)}, doručeno {sum(1 for e in events if e[0])}",
+             st == "EXPIRED" and len(events) == 1 and events[0][0] is None)
+    env.clock.value = datetime(2026, 9, 15, 9, 50)
+    r = env.admin.post(f"/reservations/{b2}/approve")
+    st, events = env.read("SELECT state FROM reservations WHERE id = ?", (b2,))[0][0], expiry_events(env)
+    confirmed = env.read("SELECT COUNT(*) FROM reservations WHERE station_id = ? AND state = 'CONFIRMED'", (HPC09,))[0][0]
+    rep.step(4, "09:50 admin schvaluje pozdě, pak čtení z DB",
+             "409, B2 EXPIRED, žádná CONFIRMED na HPC 09, událost doručená (dispatch po POST), 0 překryvů",
+             f"{r.status_code}, B2 {st}, CONFIRMED na HPC 09: {confirmed}, událostí {len(events)} "
+             f"(doručeno {sum(1 for e in events if e[0])}), překryvů {env.overlaps()}",
+             (r.status_code, st, confirmed, len(events)) == (409, "EXPIRED", 0, 1) and events[0][0] is not None
+             and env.overlaps() == 0)
+    page = env.ev2.notifications()
+    stored = env.read("SELECT message FROM notifications n JOIN users u ON u.id = n.user_id WHERE u.username = 'ridic_ev2'")
+    expired = [m[0] for m in stored if "propadla" in m[0]]
+    approved = [m[0] for m in stored if "schválena" in m[0]]
+    rep.step(5, "ridic_ev2 GET /notifications + čtení tabulky notifications",
+             f"právě 1 zpráva o propadnutí #{b2}, žádná o schválení, zpráva je vidět na stránce",
+             f"o propadnutí {len(expired)}, o schválení {len(approved)}, na stránce {'ano' if 'propadla' in page else 'ne'}",
+             len(expired) == 1 and f"#{b2}" in expired[0] and not approved and "propadla" in page)
+    return f"{r.status_code}, B2 {st}, zpráv {len(expired)}"
+
+
 def main() -> int:
     rep = Report()
     with tempfile.TemporaryDirectory() as tmp:
         for name, tc in (("TC-C08-01 navazující rezervace, OP-05 Approve", tc01),
-                         ("TC-C08-02 kolize při OP-03 Confirm", tc02)):
+                         ("TC-C08-02 kolize při OP-03 Confirm", tc02),
+                         ("TC-C08-03 CR-08 zpráva o propadlé žádosti (C09)", tc03)):
             outcomes = []
             for run in (1, 2):
                 print(f"== {name} – běh {run}")
                 outcomes.append(tc(Path(tmp), run, rep))
-            rep.step(5, "reset a zopakování", "stejný výsledek v obou bězích", " | ".join(outcomes),
+            rep.step("R", "reset a zopakování", "stejný výsledek v obou bězích", " | ".join(outcomes),
                      outcomes[0] == outcomes[1])
     passed = sum(rep.results)
     print(f"== {passed}/{len(rep.results)} kroků odpovídá očekávání")

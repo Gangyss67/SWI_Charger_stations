@@ -51,12 +51,6 @@ _write_lock = threading.RLock()
 
 
 @contextmanager
-def write_lock():
-    with _write_lock:
-        yield
-
-
-@contextmanager
 def transaction(conn: sqlite3.Connection):
     """BEGIN IMMEDIATE získá zápisový zámek hned, takže kontrola dostupnosti
     a zápis proběhnou atomicky i při souběžných požadavcích."""
