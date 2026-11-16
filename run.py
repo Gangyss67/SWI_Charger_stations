@@ -6,8 +6,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
-# C10: čas u každého záznamu (i u startu serveru a přístupového logu Werkzeug), výstup dál na stderr.
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+# C10: čas u záznamů aplikace (logger charging a pod ním i outbox), výstup dál na stderr.
+# Přístupový log si Werkzeug píše sám (má vlastní čas), přes root logger by do souboru psal ANSI barvy.
+_handler = logging.StreamHandler()
+_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+logging.getLogger("charging").addHandler(_handler)
+logging.getLogger("charging").setLevel(logging.INFO)
 
 from charging import create_app  # noqa: E402
 from charging.db import SCHEMA_VERSION  # noqa: E402
