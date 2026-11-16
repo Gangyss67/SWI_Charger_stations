@@ -11,7 +11,9 @@ from flask import current_app, g
 from werkzeug.security import generate_password_hash
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
-SCHEMA_VERSION = 5  # PRAGMA user_version nastavuje schema.sql; 0/1 = C01, 2–4 = v0.2.x, 5 = outbox (C03)
+SCHEMA_VERSION = 6  # PRAGMA user_version nastavuje schema.sql; 0/1 = C01, 2–4 = v0.2.x, 5 = outbox (C03),
+#                     6 = vozidla v profilu, stát SPZ, notifikace na telefon
+MIN_MIGRATABLE_VERSION = 5  # z v5 umíme migrovat bez ztráty dat, starší DB jde do zálohy
 
 # 10 nabíječek, z toho 3 vysokorychlostní (jen pro BEV). DC 07 a HPC 08–10 (>= 50 kW)
 # vyžadují schválení administrátorem (BR-06).
@@ -65,7 +67,23 @@ def transaction(conn: sqlite3.Connection):
             conn.execute("COMMIT")
 
 
+def migrate(conn: sqlite3.Connection) -> None:
+    """v5 -> v6: jen přidává sloupce, data zůstávají. Nové tabulky a indexy pak založí schema.sql
+    (CREATE ... IF NOT EXISTS), který nastaví i user_version = 6."""
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    has_tables = conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'reservations'").fetchone()
+    if has_tables is None or version != 5:
+        return
+    with transaction(conn):
+        conn.execute(
+            "ALTER TABLE reservations ADD COLUMN plate_country TEXT NOT NULL DEFAULT 'CZ'"
+            " CHECK (length(plate_country) BETWEEN 1 AND 3)"
+        )
+        conn.execute("ALTER TABLE users ADD COLUMN push_topic TEXT")
+
+
 def init_schema(conn: sqlite3.Connection, seed_demo_users: bool = True) -> None:
+    migrate(conn)
     conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with transaction(conn):
@@ -97,8 +115,9 @@ def close_db(_exc=None) -> None:
 
 
 def retire_outdated_database(path: str) -> Path | None:
-    """Starší schéma nejde rozšířit přes CREATE TABLE IF NOT EXISTS (jiné stavy a sloupce).
-    Soubor se proto nepřepisuje, ale přejmenuje na zálohu a založí se nová databáze."""
+    """Schéma starší než v5 nejde rozšířit přes CREATE TABLE IF NOT EXISTS (jiné stavy a sloupce).
+    Soubor se proto nepřepisuje, ale přejmenuje na zálohu a založí se nová databáze.
+    DB ve verzi 5 se nezálohuje, tu převede migrate()."""
     db_path = Path(path)
     if not db_path.exists():
         return None
@@ -108,7 +127,7 @@ def retire_outdated_database(path: str) -> Path | None:
         has_tables = conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'reservations'").fetchone()
     finally:
         conn.close()
-    if has_tables is None or version >= SCHEMA_VERSION:
+    if has_tables is None or version >= MIN_MIGRATABLE_VERSION:
         return None
     backup = db_path.with_name(f"{db_path.name}.v{version}.bak")
     db_path.replace(backup)

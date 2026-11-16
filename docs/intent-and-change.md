@@ -610,3 +610,14 @@ Reviewer: **DOPLNIT** (Š. Exner nebo D. Volný). Zpochybněný předpoklad: „
 | C09 | commit + tag, integrační běh přes HTTP, CI, čistý checkout, rozhodnutí o release |
 
 **Otevřené:** jestli má žádost po lhůtě eskalovat (otázka z R-01) a varianta B. Spouštěč: cvičící, nasazení na server nebo stížnost, že zpráva přišla pozdě.
+
+---
+
+# Vylepšení po C10 (mimo zadání cvičení)
+
+Aby se aplikace víc podobala skutečné, přidali jsme profil vozidel, přísnější kontrolu SPZ a notifikace na telefon. Rozhodnutí jsou v [architecture-and-decisions.md](architecture-and-decisions.md) (D10, D11).
+
+Dopad na specifikaci v0.2:
+- **OP-02 Create:** předpoklad „SPZ je vyplněna“ je nově „SPZ je vyplněna ve tvaru platném pro zvolený stát“ (česká `1AB 2345` s existujícím kódem kraje, `EL 123AB`, značka na přání; SK, PL, D, A, H obecně). Neplatná SPZ → zamítnuto (400) s vysvětlením. Místo ručního zadání jde vybrat uložené vozidlo – výsledná rezervace je stejná (typ vozu, SPZ a stát se zkopírují), BR-04 platí beze změny.
+- **Notification Service:** stejné zprávy jako dosud (REQ-06, REQ-09, CR-08) jdou kromě in-app schránky i na telefon, když si to uživatel zapne. Kdo dostane zprávu, se nemění.
+- OP-01, OP-03, OP-04, OP-05, BR-01 až BR-06 a stavový diagram beze změny.

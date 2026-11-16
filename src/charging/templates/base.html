@@ -22,6 +22,7 @@
         <a href="{{ url_for('main.my_reservations') }}"{% if request.endpoint == 'main.my_reservations' %} aria-current="page"{% endif %}>Moje rezervace</a>
         {% if g.user.is_admin %}<a href="{{ url_for('main.admin_reservations') }}"{% if request.endpoint == 'main.admin_reservations' %} aria-current="page"{% endif %}>Schvalování{% if pending_approvals %}<span class="count">{{ pending_approvals }}</span>{% endif %}</a>{% endif %}
         <a href="{{ url_for('main.notifications_page') }}"{% if request.endpoint == 'main.notifications_page' %} aria-current="page"{% endif %}>Notifikace{% if unread_notifications %}<span class="count">{{ unread_notifications }}</span>{% endif %}</a>
+        <a href="{{ url_for('main.profile') }}"{% if request.endpoint == 'main.profile' %} aria-current="page"{% endif %}>Profil</a>
         <span class="who">{{ g.user.username }}{% if g.user.is_admin %}, administrátor{% endif %}</span>
         <form method="post" action="{{ url_for('auth.logout') }}" class="inline">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -44,5 +45,25 @@
   {% endwith %}
   {% block content %}{% endblock %}
 </main>
+<script>
+  // Uložené vozidlo vs. ruční zadání: „Jiné vozidlo…“ odkryje typ vozu, stát a SPZ.
+  document.querySelectorAll('[data-vehicle-select]').forEach(function (select) {
+    var manual = select.form && select.form.querySelector('[data-manual]');
+    if (!manual) return;
+    function sync() {
+      var other = select.value === '';
+      manual.hidden = !other;
+      manual.querySelectorAll('input, select').forEach(function (el) { el.disabled = !other; });
+    }
+    select.addEventListener('change', sync);
+    sync();
+  });
+  document.querySelectorAll('[data-copy]').forEach(function (button) {
+    button.addEventListener('click', function () {
+      if (!navigator.clipboard) return;
+      navigator.clipboard.writeText(button.dataset.copy).then(function () { button.textContent = 'Zkopírováno'; });
+    });
+  });
+</script>
 </body>
 </html>

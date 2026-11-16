@@ -250,6 +250,15 @@ a.cell:hover { background: var(--ok); }
 .narrow form { display: flex; flex-direction: column; gap: 14px; }
 .narrow input { width: 100%; }
 
+/* ---------------------------------------------------------------- profil: vozidla, notifikace na telefon */
+[hidden] { display: none !important; }
+.manual-vehicle { display: contents; }  /* pole ručního zadání se řadí do řádku formuláře jako ostatní */
+.tag.default { border-color: var(--ok); color: var(--ok); }
+.panel h3 { margin-top: 4px; }
+.steps { margin: 0; padding-left: 1.4em; display: flex; flex-direction: column; gap: 12px; max-width: 70ch; }
+.steps li::marker { font: 700 1.1rem var(--font-display); color: var(--accent); }
+.topic { font: 500 .9rem/1.4 var(--font-data); background: var(--accent-soft); color: var(--ink); padding: 2px 6px; border-radius: 3px; overflow-wrap: anywhere; }
+
 @media (max-width: 720px) {
   h1 { font-size: var(--step-2); }
   .two-col { grid-template-columns: minmax(0, 1fr); }

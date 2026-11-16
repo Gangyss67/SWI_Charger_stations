@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% from "_macros.html" import plate, vehicle_label, vehicle_select, country_select %}
+{% block title %}Profil{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div class="stack">
+    <p class="eyebrow">{{ g.user.username }}</p>
+    <h1>Profil</h1>
+  </div>
+  <p class="lede">Uložená vozidla se předvyplní do rezervace a notifikace vám můžou chodit i na telefon.</p>
+</div>
+
+<section class="panel" id="vehicles" aria-labelledby="vehicles-title">
+  <h2 id="vehicles-title">Moje vozidla</h2>
+  {% if not vehicles %}
+    <p class="empty">Zatím nemáte uložené žádné vozidlo. Přidejte si ho a při rezervaci ho jen vyberete.</p>
+  {% else %}
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Vozidlo</th><th>SPZ</th><th>Typ</th><th><span class="sr-only">Akce</span></th></tr></thead>
+    <tbody>
+    {% for v in vehicles %}
+      <tr>
+        <td><div class="status"><strong>{{ v.name }}</strong>{% if v.is_default %}<span class="tag default">výchozí</span>{% endif %}</div></td>
+        <td>{{ plate(v.license_plate, v.plate_country) }}</td>
+        <td>{{ vehicle_label(v.vehicle_type) }}</td>
+        <td class="actions">
+          {% if not v.is_default %}
+          <form method="post" action="{{ url_for('main.default_vehicle', vehicle_id=v.id) }}" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="btn small quiet">Nastavit jako výchozí</button>
+          </form>
+          {% endif %}
+          <form method="post" action="{{ url_for('main.delete_vehicle', vehicle_id=v.id) }}" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="btn small danger">Smazat</button>
+          </form>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% endif %}
+
+  <h3>Přidat vozidlo</h3>
+  <form method="post" action="{{ url_for('main.add_vehicle') }}" class="fields">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label class="field" for="v-name"><span>Název</span>
+      <input id="v-name" name="name" value="{{ form.name }}" maxlength="40" placeholder="Tesla Model 3" required></label>
+    <label class="field" for="v-type"><span>Typ vozu</span>{{ vehicle_select(vehicle_types, form.vehicle_type, 'v-type') }}</label>
+    <label class="field" for="v-country"><span>Stát</span>{{ country_select(countries, form.plate_country, 'v-country') }}</label>
+    <label class="field" for="v-plate"><span>SPZ</span>
+      <input id="v-plate" name="license_plate" value="{{ form.license_plate }}" maxlength="12" placeholder="1AB 2345" autocomplete="off" required></label>
+    <button class="btn">Uložit vozidlo</button>
+  </form>
+  <p class="note">Českou SPZ kontrolujeme podle tvaru: běžná 1AB 2345 (druhý znak je kód kraje), elektromobil EL 123AB, nebo značka na přání (5–8 písmen a číslic). Smazání vozidla nemění rezervace, které už s ním máte.</p>
+</section>
+
+<section class="panel" id="push" aria-labelledby="push-title">
+  <h2 id="push-title">Notifikace na telefon</h2>
+  {% if not ntfy_url %}
+    <p class="empty">Notifikace na telefon nejsou na tomto serveru zapnuté. Zprávy najdete v sekci <a href="{{ url_for('main.notifications_page') }}">Notifikace</a>.</p>
+  {% elif not push_topic %}
+    <p>Výsledek schválení, zrušení rezervace, propadlou žádost nebo uvolněné rychlejší stání vám můžeme poslat i na telefon. Používáme k tomu <a href="https://ntfy.sh" rel="noopener">ntfy</a>, bezplatnou aplikaci pro Android a iPhone. Nemusíte se nikde registrovat.</p>
+    <form method="post" action="{{ url_for('main.enable_push') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button class="btn">Zapnout notifikace na telefon</button>
+    </form>
+  {% else %}
+    <p><span class="lamp ok">Zapnuto</span></p>
+    <ol class="steps">
+      <li>Nainstalujte si aplikaci <strong>ntfy</strong>: Android z <a href="https://play.google.com/store/apps/details?id=io.heckel.ntfy" rel="noopener">Google Play</a> nebo <a href="https://f-droid.org/packages/io.heckel.ntfy/" rel="noopener">F-Droid</a>, iPhone z App Store (<a href="https://docs.ntfy.sh/subscribe/phone/" rel="noopener">návod</a>).</li>
+      <li>V aplikaci klepněte na <strong>+</strong> a přidejte téma
+        <code class="topic">{{ push_topic }}</code>
+        <button type="button" class="btn small quiet" data-copy="{{ push_topic }}">Kopírovat</button>
+        {% if ntfy_url != 'https://ntfy.sh' %}<br><small>Server: <code class="topic">{{ ntfy_url }}</code></small>{% endif %}
+        <br><small>Nebo na telefonu otevřete <a href="{{ ntfy_url }}/{{ push_topic }}" rel="noopener">{{ ntfy_url }}/{{ push_topic }}</a>.</small></li>
+      <li>Pošlete si zkušební notifikaci:
+        <form method="post" action="{{ url_for('main.test_push') }}" class="inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button class="btn small">Poslat zkušební notifikaci</button>
+        </form></li>
+    </ol>
+    <p class="note">Téma funguje jako heslo: kdo ho zná, vidí vaše notifikace. Nikomu ho neposílejte. SPZ do notifikací na telefon neposíláme. Kdyby se téma dostalo ven, vygenerujte si nové.</p>
+    <div class="row">
+      <form method="post" action="{{ url_for('main.enable_push') }}" class="inline">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button class="btn small quiet">Vygenerovat nové téma</button>
+      </form>
+      <form method="post" action="{{ url_for('main.disable_push') }}" class="inline">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button class="btn small danger">Vypnout</button>
+      </form>
+    </div>
+  {% endif %}
+</section>
+{% endblock %}

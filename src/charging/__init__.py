@@ -9,6 +9,7 @@ from pathlib import Path
 from flask import Flask, g, render_template
 
 from . import db
+from .services.notifications import DEFAULT_NTFY_URL
 from .timeutil import format_range
 
 
@@ -28,6 +29,8 @@ def create_app(test_config: dict | None = None) -> Flask:
         DATABASE=os.environ.get("DATABASE_PATH", str(Path(app.instance_path) / "charging.db")),
         SEED_DEMO_USERS=True,
         CLOCK=datetime.now,
+        # notifikace na telefon přes ntfy; prázdné = vypnuto, jde nastavit i vlastní ntfy server
+        NTFY_URL=os.environ.get("NTFY_URL", DEFAULT_NTFY_URL),
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
     )

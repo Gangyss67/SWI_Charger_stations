@@ -5,7 +5,7 @@ Toto je naše týmové repo do předmětu SWI. Výsledkem je funkční rezervač
 **Tým:** Jan Staněk, Dominik Volný, Šimon Exner
 **Repozitář:** <https://github.com/Gangyss67/SWI_Charger_stations>
 
-Webová aplikace pro rezervaci 10 nabíjecích stanic (z toho 3 vysokorychlostní jen pro plně elektrické vozy) po 30minutových slotech, s přihlašováním uživatelů, schvalováním rezervací rychlých stanic a in-app notifikacemi. Aplikace odpovídá **specifikaci baseline v0.2** ([docs/intent-and-change.md](docs/intent-and-change.md), sekce CV2).
+Webová aplikace pro rezervaci 10 nabíjecích stanic (z toho 3 vysokorychlostní jen pro plně elektrické vozy) po 30minutových slotech, s přihlašováním uživatelů, schvalováním rezervací rychlých stanic, profilem uložených vozidel, kontrolou SPZ a notifikacemi v aplikaci i na telefonu. Aplikace odpovídá **specifikaci baseline v0.2** ([docs/intent-and-change.md](docs/intent-and-change.md), sekce CV2).
 
 ## Stack
 
@@ -35,7 +35,7 @@ python3 -m venv .venv
 ```
 
 Aplikace běží na <http://127.0.0.1:5000>. Databáze se vytvoří automaticky při prvním startu (schéma + 10 stanic + demo účty).
-Reset databáze = smazat soubor `instance/charging.db`. Databázi se starším schématem (C01) aplikace při startu sama přesune do zálohy `instance/charging.db.v0.bak` a založí novou.
+Reset databáze = smazat soubor `instance/charging.db`. Databázi ze schématu verze 5 (C03–C10) aplikace při startu sama doplní na verzi 6 (vozidla, stát SPZ, notifikace na telefon), data zůstanou. Ještě starší databázi (C01, C02) přesune do zálohy `instance/charging.db.v<verze>.bak` a založí novou.
 
 ### Demo účty
 
@@ -46,6 +46,19 @@ Reset databáze = smazat soubor `instance/charging.db`. Databázi se starším s
 | `ridic_phev` | `phev1234` | PHEV | uživatel (nesmí na HPC nabíječky) |
 
 Typ vozidla u účtu je jen výchozí hodnota – typ vozu a SPZ se zadávají u každé rezervace. Další účty lze vytvořit přes Registraci.
+
+### Profil: vozidla a notifikace na telefon
+
+V **Profil** si uživatel uloží svá auta (název, typ BEV/PHEV, stát a SPZ). Při rezervaci pak jen vybere vozidlo, typ a SPZ se doplní samy. Na HPC stání nejdou vybrat plug-in hybridy (BR-04). Rezervace si údaje kopíruje, takže smazání vozidla historii nemění.
+
+SPZ se kontroluje podle státu ([src/charging/services/plates.py](src/charging/services/plates.py)): česká běžná `1AB 2345` (druhý znak je kód kraje), elektromobil `EL 123AB`, značka na přání 5–8 písmen a číslic (aspoň jedna číslice). U SK, PL, D, A, H jen obecně (písmena, číslice, mezera, pomlčka).
+
+**Notifikace na telefon** jdou přes [ntfy](https://ntfy.sh) – open-source push službu s aplikací pro Android i iPhone, bez registrace a bez API klíče:
+1. V Profilu klikněte na *Zapnout notifikace na telefon*. Aplikace vygeneruje náhodné téma (funguje jako heslo).
+2. Do telefonu si nainstalujte aplikaci **ntfy** (Google Play, F-Droid, App Store), klepněte na **+** a zadejte téma z Profilu.
+3. Tlačítkem *Poslat zkušební notifikaci* si to ověřte.
+
+Na telefon pak přijde totéž co do Notifikací v aplikaci (schválení, zamítnutí, zrušení adminem, propadlá žádost, uvolněné stání), jen bez SPZ. Server nastavuje proměnná `NTFY_URL` (výchozí `https://ntfy.sh`, může to být i vlastní ntfy server, prázdná hodnota = funkce vypnutá).
 
 ## Testy
 
@@ -65,7 +78,7 @@ Smoke test po spuštění `run.py`: <http://127.0.0.1:5000/login> vrátí přihl
 ## Doména v kostce (baseline v0.2)
 
 - **Resource:** nabíjecí stanice `AC 01–03` 11 kW, `AC 04–06` 22 kW, `DC 07` 50 kW, `HPC 08–10` 150 kW.
-- **Reservation:** stanice + interval `[start, end)` po 30min slotech (1–8 slotů, max. 14 dní dopředu) + typ vozu + SPZ + stav.
+- **Reservation:** stanice + interval `[start, end)` po 30min slotech (1–8 slotů, max. 14 dní dopředu) + typ vozu + SPZ (+ stát) + stav.
 - **Operace:** OP-01 Check Availability, OP-02 Create, OP-03 Confirm, OP-04 Cancel, OP-05 Approve / Reject (admin).
 - **Stavy:** `DRAFT` (návrh, 5 min, neblokuje) → `CONFIRMED` (AC) nebo `PENDING_APPROVAL` (DC/HPC, blokuje, čeká na admina)
   → `CONFIRMED` / `REJECTED`; koncové `CANCELLED`, `CANCELLED_BY_ADMIN`, `REJECTED`, `EXPIRED`.
@@ -82,7 +95,7 @@ Smoke test po spuštění `run.py`: <http://127.0.0.1:5000/login> vrátí přihl
 | --- | --- | --- |
 | GET | `/?date=&time=&slots=&vehicle_type=&license_plate=` | přehled stanic + „Nová rezervace“ podle aktivitního diagramu OP-01/02: krok 1 interval, typ vozu, SPZ → krok 2 seznam volných stanic (OP-01) → „Vytvořit návrh“ (OP-02) |
 | GET | `/stations/<id>?date=YYYY-MM-DD` | dostupnost po slotech + formulář rezervace |
-| POST | `/reservations` | OP-02 create → DRAFT (formulář nebo JSON); potvrzení je samostatná akce OP-03 |
+| POST | `/reservations` | OP-02 create → DRAFT (formulář nebo JSON); místo `vehicle_type` + `license_plate` [+ `plate_country`] jde poslat `vehicle_id` uloženého vozidla; potvrzení je samostatná akce OP-03 |
 | POST | `/reservations/<id>/confirm` | OP-03 DRAFT → CONFIRMED (AC) / PENDING_APPROVAL (DC/HPC) |
 | POST | `/reservations/<id>/cancel` | OP-04 → CANCELLED / CANCELLED_BY_ADMIN |
 | POST | `/reservations/<id>/approve` | OP-05 PENDING_APPROVAL → CONFIRMED (admin) |
@@ -91,6 +104,9 @@ Smoke test po spuštění `run.py`: <http://127.0.0.1:5000/login> vrátí přihl
 | GET | `/api/availability?date=&time=&slots=&vehicle_type=[&station_id=]` | OP-01 (JSON) |
 | GET | `/api/stations/<id>/availability?date=` | sloty jedné stanice (JSON) |
 | GET | `/api/reservations/<id>` | detail rezervace (vlastník nebo admin) |
+| GET | `/profile` | profil: uložená vozidla a notifikace na telefon |
+| POST | `/profile/vehicles`, `/profile/vehicles/<id>/default`, `/profile/vehicles/<id>/delete` | přidat vozidlo / nastavit výchozí / smazat |
+| POST | `/profile/push/enable`, `/profile/push/disable`, `/profile/push/test` | zapnout (nové téma) / vypnout / zkušební notifikace na telefon |
 
 Všechny POST požadavky vyžadují přihlášení a CSRF token (`csrf_token` ve formuláři nebo hlavička `X-CSRF-Token`).
 Akce posílané jako JSON vrací rezervaci, případně chybu: `400` validace, `401` nepřihlášen, `403` cizí rezervace / chybí role Admin, `404` neexistuje, `409` kolize nebo nepovolený stav či lhůta.
@@ -142,13 +158,16 @@ src/charging/
   services/reservations.py      ReservationService – operace OP-01..OP-05, transakce
   services/domain.py            stavy, typy vozů, BR-04 a BR-06
   services/policies.py          C05 – rozhodnutí o potvrzení a dostupnosti (bez DB)
-  services/notifications.py     Notification Service (boundary)
+  services/notifications.py     Notification Service (boundary), kanály: in-app schránka + telefon (ntfy)
   services/outbox.py            doručování událostí z outboxu (ADR-01)
+  services/plates.py            kontrola a sjednocení SPZ podle státu
+  services/vehicles.py          profil vozidel uživatele
   templates/, static/
 scripts/spike_persistence.py    C01 spike A – persistence
 scripts/verify_c02.py           C02 – příklady ověření baseline v0.2 přes HTTP
 scripts/verify_c08.py           C08 – krokované test casy TC-C08-01/02 (BR-02), C09 – TC-C08-03 (CR-08)
 scripts/dispatch_notifications.py  C03 – opakované doručení notifikací z outboxu
 scripts/measure_c04.py          C04 – měření souběžného potvrzování (kritérium K1–K3)
-tests/                          pytest testy (test_architecture.py = pravidlo z ADR-01, test_confirmation_design.py = C05)
+tests/                          pytest testy (test_architecture.py = pravidlo z ADR-01, test_confirmation_design.py = C05,
+                                test_profile.py = SPZ, vozidla, notifikace na telefon, migrace DB)
 ```

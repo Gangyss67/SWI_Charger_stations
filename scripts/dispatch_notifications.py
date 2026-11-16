@@ -12,7 +12,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from charging import create_app  # noqa: E402
 from charging.db import get_db  # noqa: E402
-from charging.services.notifications import DatabaseChannel, NotificationService  # noqa: E402
+from charging.services.notifications import NotificationService, build_channel  # noqa: E402
 from charging.services.outbox import OutboxDispatcher  # noqa: E402
 
 
@@ -20,7 +20,8 @@ def main() -> int:
     app = create_app()  # stejná DB a schéma jako běžící aplikace
     with app.app_context():
         conn, clock = get_db(), app.config["CLOCK"]
-        dispatcher = OutboxDispatcher(conn, NotificationService(conn, DatabaseChannel(conn, clock)), clock)
+        # stejné kanály jako aplikace: in-app schránka + telefon (ntfy), když ho má uživatel zapnutý
+        dispatcher = OutboxDispatcher(conn, NotificationService(conn, build_channel(conn, clock, app.config)), clock)
         delivered = dispatcher.dispatch(max_attempts=None)
         print(f"doručeno {delivered}, čeká {len(dispatcher.pending(max_attempts=None))}")
     return 0

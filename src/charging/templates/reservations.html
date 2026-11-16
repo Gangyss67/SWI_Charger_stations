@@ -19,7 +19,7 @@
       <td class="num">{{ r.id }}</td>
       <td>{{ station_cell(r) }}</td>
       <td class="mono">{{ r.start_time|timerange(r.end_time) }}</td>
-      <td><div class="status">{{ plate(r.license_plate) }}<small>{{ vehicle_label(r.vehicle_type) }}</small></div></td>
+      <td><div class="status">{{ plate(r.license_plate, r.plate_country) }}<small>{{ vehicle_label(r.vehicle_type) }}</small></div></td>
       <td><div class="status">
         <span>{{ state(r.state) }}</span>
         {% if r.usage %}<span class="status-hint">{{ r.usage }}</span>{% endif %}

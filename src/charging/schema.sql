@@ -9,8 +9,27 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash TEXT    NOT NULL,
     vehicle_type  TEXT    NOT NULL CHECK (vehicle_type IN ('BEV', 'PHEV')),  -- výchozí vůz do formulářů
     is_admin      INTEGER NOT NULL DEFAULT 0 CHECK (is_admin IN (0, 1)),
-    created_at    TEXT    NOT NULL
+    created_at    TEXT    NOT NULL,
+    push_topic    TEXT    -- téma pro notifikace na telefon (ntfy), NULL = vypnuto (schéma v6)
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_push_topic ON users (push_topic) WHERE push_topic IS NOT NULL;
+
+-- Profil vozidel uživatele (schéma v6). Rezervace si typ vozu a SPZ kopíruje, takže smazání
+-- vozidla historii rezervací nezmění.
+CREATE TABLE IF NOT EXISTS vehicles (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id       INTEGER NOT NULL REFERENCES users (id),
+    name          TEXT    NOT NULL CHECK (length(trim(name)) BETWEEN 1 AND 40),
+    vehicle_type  TEXT    NOT NULL CHECK (vehicle_type IN ('BEV', 'PHEV')),
+    license_plate TEXT    NOT NULL CHECK (length(trim(license_plate)) > 0),
+    plate_country TEXT    NOT NULL DEFAULT 'CZ' CHECK (length(plate_country) BETWEEN 1 AND 3),
+    is_default    INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1)),
+    created_at    TEXT    NOT NULL,
+    UNIQUE (user_id, plate_country, license_plate)
+);
+
+CREATE INDEX IF NOT EXISTS idx_vehicles_user ON vehicles (user_id);
 
 -- is_high_speed = HPC (BR-04: jen BEV); power_kw >= 50 = DC/HPC (BR-06: vyžaduje schválení).
 CREATE TABLE IF NOT EXISTS stations (
@@ -38,6 +57,7 @@ CREATE TABLE IF NOT EXISTS reservations (
     updated_at        TEXT    NOT NULL,
     draft_expires_at  TEXT    NOT NULL,  -- BR-05: created_at + 5 min
     approval_deadline TEXT,              -- BR-06: start_time − 15 min (jen DC/HPC po potvrzení)
+    plate_country     TEXT    NOT NULL DEFAULT 'CZ' CHECK (length(plate_country) BETWEEN 1 AND 3),  -- stát SPZ (v6)
     CHECK (start_time < end_time),
     CHECK (state <> 'PENDING_APPROVAL' OR approval_deadline IS NOT NULL)
 );
@@ -141,4 +161,4 @@ BEGIN
     SELECT RAISE(ABORT, 'APPROVAL_REQUIRED');
 END;
 
-PRAGMA user_version = 5;
+PRAGMA user_version = 6;

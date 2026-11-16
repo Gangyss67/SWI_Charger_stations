@@ -484,3 +484,19 @@ Překryv počítáme jako `r.start < end and start < r.end`, takže rezervace, k
 - jak `expire_overdue()` přepíná propadlé rezervace (zůstává z C02),
 - formát časů a převody (`parse_dt`, `format_ts`),
 - repository vrstvu neděláme, SQL zůstává v `ReservationService` (malá appka, jedna DB).
+
+---
+
+# Vylepšení po C10
+
+## D10 – Profil vozidel a kontrola SPZ podle státu
+- **Kontext:** typ vozu a SPZ se zadávaly ručně u každé rezervace (D8) a SPZ se kontrolovala jen obecně (písmena, číslice, max. 12 znaků), takže prošlo i „ABC“.
+- **Rozhodnutí:** uživatel si v profilu uloží vozidla (tabulka `vehicles`, `services/vehicles.py`) a při rezervaci jedno vybere. Rezervace si typ, SPZ a stát dál **kopíruje** – D8 platí, BR-04 se pořád vyhodnocuje nad typem vozu v rezervaci a smazání vozidla historii nezmění. SPZ kontroluje `services/plates.py` podle státu: česká tři tvary (běžná s kódem kraje, `EL`, na přání), sousední státy obecně. Stát se ukládá k rezervaci (`plate_country`) a ukazuje se v modrém EU pruhu značky.
+- **Důsledky:** přísnější vstup OP-02 – SPZ, která dřív prošla, teď může být odmítnutá (400). Schéma v6; DB ve v5 se při startu doplní (`db.migrate()`), nezálohuje se.
+
+## D11 – Notifikace na telefon přes ntfy
+- **Kontext:** Notification Service měla jen in-app schránku. D5 a ADR-01 počítaly s tím, že další kanál půjde přidat jako `NotificationChannel`.
+- **Rozhodnutí:** `PushChannel` posílá kopii zprávy přes [ntfy](https://ntfy.sh) (HTTP POST na náhodné téma uživatele, `users.push_topic`). `build_channel()` skládá kanály pro aplikaci i pro `dispatch_notifications.py`: nejdřív in-app schránka, pak telefon. Vybrali jsme ntfy, protože nepotřebuje účet, API klíč ani platbu (SMS brána by stála peníze a Web Push by potřeboval HTTPS a klíče VAPID) a jde provozovat i na vlastním serveru (`NTFY_URL`).
+- **Selhání:** push je **best-effort**, posílá se jednou ve vlákně. Když ntfy nejede, chyba se zaloguje (C10) a in-app zpráva zůstane doručená. Kdyby se push opakoval přes outbox, výpadek ntfy by zdržoval každý POST (dispatch je v `after_request`) a blokoval i in-app zprávy. Vlákno je kvůli tomu, aby HTTP volání nedrželo zámek zápisu DB (dispatcher doručuje v transakci, D9).
+- **Soukromí:** téma je náhodné (`secrets.token_urlsafe`) a funguje jako heslo. SPZ se na telefon neposílá, text jde přes cizí server.
+- **Důsledky:** push může přijít dvakrát, když se doručení události v outboxu opakuje (stejné „aspoň jednou“ jako v ADR-01), a při výpadku ntfy se ztratí – v aplikaci je zpráva vždycky. ADR-01 platí dál, `ReservationService` o novém kanálu neví (`tests/test_architecture.py`).

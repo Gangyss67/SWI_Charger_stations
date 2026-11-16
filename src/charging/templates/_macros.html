@@ -19,9 +19,40 @@
   <span class="lamp {{ labels[status][1] }}">{{ labels[status][0] }}</span>
 {%- endmacro %}
 
-{# SPZ vykreslená jako česká registrační značka. #}
-{% macro plate(number) -%}
-  <span class="plate" title="SPZ {{ number }}"><span class="plate-eu" aria-hidden="true">CZ</span><span class="plate-no">{{ number }}</span></span>
+{# SPZ vykreslená jako registrační značka s modrým EU pruhem a kódem státu. #}
+{% macro plate(number, country='CZ') -%}
+  <span class="plate" title="SPZ {{ number }} ({{ country or 'CZ' }})"><span class="plate-eu" aria-hidden="true">{{ country or 'CZ' }}</span><span class="plate-no">{{ number }}</span></span>
+{%- endmacro %}
+
+{% macro country_select(countries, selected, id) -%}
+  <select name="plate_country" id="{{ id }}">
+    {%- for code, label in countries.items() %}<option value="{{ code }}"{% if code == selected %} selected{% endif %}>{{ code }} · {{ label }}</option>{% endfor -%}
+  </select>
+{%- endmacro %}
+
+{# Výběr uloženého vozidla z profilu; „Jiné vozidlo“ odkryje ruční zadání (blok data-manual). #}
+{% macro vehicle_picker(vehicles, selected_id, id) -%}
+  <label class="field" for="{{ id }}"><span>Vozidlo</span>
+    <select name="vehicle_id" id="{{ id }}" data-vehicle-select>
+      {%- for v in vehicles %}
+        {%- set blocked = v.allowed is defined and not v.allowed %}
+        <option value="{{ v.id }}"{% if v.id|string == selected_id|string and not blocked %} selected{% endif %}{% if blocked %} disabled{% endif %}>{{ v.name }} · {{ v.license_plate }}{% if blocked %} (sem jen BEV){% endif %}</option>
+      {%- endfor %}
+      <option value=""{% if not selected_id %} selected{% endif %}>Jiné vozidlo…</option>
+    </select></label>
+{%- endmacro %}
+
+{# Ruční zadání vozu: typ, stát a SPZ. Když je vybrané uložené vozidlo, je blok skrytý a vypnutý. #}
+{% macro manual_vehicle(vehicle_types, vehicle_type, countries, plate_country, license_plate, id, hidden=false) -%}
+  <div class="manual-vehicle" data-manual{% if hidden %} hidden{% endif %}>
+    <label class="field" for="{{ id }}-type"><span>Typ vozu</span>{{ vehicle_select(vehicle_types, vehicle_type, id ~ '-type', hidden) }}</label>
+    <label class="field" for="{{ id }}-country"><span>Stát</span>
+      <select name="plate_country" id="{{ id }}-country"{% if hidden %} disabled{% endif %}>
+        {%- for code, label in countries.items() %}<option value="{{ code }}"{% if code == plate_country %} selected{% endif %}>{{ code }}</option>{% endfor -%}
+      </select></label>
+    <label class="field" for="{{ id }}-plate"><span>SPZ</span>
+      <input id="{{ id }}-plate" name="license_plate" value="{{ license_plate }}" maxlength="12" placeholder="1AB 2345" autocomplete="off" required{% if hidden %} disabled{% endif %}></label>
+  </div>
 {%- endmacro %}
 
 {# Pravidla stání: HPC jen BEV (BR-04), DC a HPC se schválením administrátora (BR-06). #}
@@ -37,8 +68,8 @@
 {% macro vehicle_label(code) -%}{{ 'Elektromobil (BEV)' if code == 'BEV' else 'Plug-in hybrid (PHEV)' }}{%- endmacro %}
 
 {# Výběr typu vozu (OP-02: typ vozu a SPZ). #}
-{% macro vehicle_select(types, selected, id) -%}
-  <select name="vehicle_type" id="{{ id }}" required>
+{% macro vehicle_select(types, selected, id, disabled=false) -%}
+  <select name="vehicle_type" id="{{ id }}" required{% if disabled %} disabled{% endif %}>
     {%- for v in types %}<option value="{{ v }}"{% if v == selected %} selected{% endif %}>{{ vehicle_label(v) }}</option>{% endfor -%}
   </select>
 {%- endmacro %}

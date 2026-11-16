@@ -19,7 +19,6 @@ Rozhodnutí o potvrzení (C05) dělají čisté třídy v services/policies.py: 
 from __future__ import annotations
 
 import json
-import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import date, datetime, time, timedelta
@@ -42,6 +41,7 @@ from .domain import (  # VEHICLE_* a stavy importují odsud i views.py a auth.py
     requires_approval,
     vehicle_allowed,
 )
+from .plates import DEFAULT_COUNTRY, PlateError, normalize_country, normalize_plate
 from .policies import (
     ALREADY_STARTED,
     AVAILABLE,
@@ -85,9 +85,6 @@ SLOT_PAST = "PAST"
 UNAVAILABLE_COLLISION = "COLLISION"
 UNAVAILABLE_PENDING = "PENDING_APPROVAL"
 UNAVAILABLE_VEHICLE = "VEHICLE"
-
-PLATE_MAX_LENGTH = 12
-_PLATE_RE = re.compile(r"[A-Z0-9](?:[A-Z0-9 -]*[A-Z0-9])?")
 
 HIGH_SPEED_MESSAGE = (
     "Vysokorychlostní nabíječku (HPC) může rezervovat pouze plně elektrický vůz (BEV), ne plug-in hybrid."
@@ -142,15 +139,13 @@ def parse_vehicle_type(value) -> str:
     return value
 
 
-def normalize_license_plate(value) -> str:
-    plate = " ".join(str(value or "").upper().split())
-    if not plate:
-        raise ReservationError("Vyplňte SPZ vozidla.")
-    if len(plate) > PLATE_MAX_LENGTH or not _PLATE_RE.fullmatch(plate):
-        raise ReservationError(
-            f"SPZ smí obsahovat jen písmena A–Z, číslice, mezeru a pomlčku (max. {PLATE_MAX_LENGTH} znaků)."
-        )
-    return plate
+def normalize_license_plate(value, country=DEFAULT_COUNTRY) -> tuple[str, str]:
+    """SPZ a stát -> (SPZ v jednotném tvaru, kód státu). Formáty jsou v services/plates.py."""
+    try:
+        country = normalize_country(country)
+        return normalize_plate(value, country), country
+    except PlateError as exc:
+        raise ReservationError(str(exc)) from None
 
 
 def check_vehicle_allowed(station, vehicle_type: str) -> None:
@@ -464,22 +459,23 @@ class ReservationService:
 
     # ------------------------------------------------------------ operace
 
-    def create(self, user_id: int, station_id: int, start: datetime, slots, vehicle_type, license_plate) -> int:
+    def create(self, user_id: int, station_id: int, start: datetime, slots, vehicle_type, license_plate,
+               plate_country=DEFAULT_COUNTRY) -> int:
         """OP-02: zaznamená záměr jako DRAFT s platností 5 minut (BR-05). Kolize se zde
-        neověřují – alokace vzniká až atomicky v OP-03."""
+        neověřují – alokace vzniká až atomicky v OP-03. SPZ se kontroluje podle státu (services/plates.py)."""
         now = self.now()
         with _atomic(self.conn):
             self.get_user(user_id)
             station = self.get_station(station_id)
-            plate = normalize_license_plate(license_plate)
+            plate, country = normalize_license_plate(license_plate, plate_country)
             vehicle = parse_vehicle_type(vehicle_type)
             end = self._validate_interval(start, slots, now)
             check_vehicle_allowed(station, vehicle)
             ts = format_ts(now)
             cur = self.conn.execute(
-                "INSERT INTO reservations (user_id, station_id, vehicle_type, license_plate, start_time, end_time,"
-                " state, created_at, updated_at, draft_expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (user_id, station_id, vehicle, plate, format_dt(start), format_dt(end), DRAFT, ts, ts,
+                "INSERT INTO reservations (user_id, station_id, vehicle_type, license_plate, plate_country, start_time,"
+                " end_time, state, created_at, updated_at, draft_expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (user_id, station_id, vehicle, plate, country, format_dt(start), format_dt(end), DRAFT, ts, ts,
                  format_ts(now + DRAFT_TTL)),
             )
             reservation_id = cur.lastrowid

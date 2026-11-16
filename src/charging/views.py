@@ -8,8 +8,9 @@ from flask import Blueprint, abort, current_app, flash, g, jsonify, redirect, re
 from .auth import admin_required, login_required
 from .db import get_db
 from .services import notifications
-from .services.notifications import DatabaseChannel, NotificationService
+from .services.notifications import NotificationService, build_channel
 from .services.outbox import OutboxDispatcher
+from .services.plates import COUNTRIES, DEFAULT_COUNTRY
 from .services.reservations import (
     BOOKING_HORIZON_DAYS,
     CANCELLED,
@@ -31,6 +32,7 @@ from .services.reservations import (
     parse_slot_start,
     requires_approval,
 )
+from .services.vehicles import VehicleService
 from .timeutil import ceil_to_slot, time_options
 
 bp = Blueprint("main", __name__)
@@ -56,7 +58,7 @@ def _service() -> ReservationService:
 
 def _dispatcher() -> OutboxDispatcher:
     conn, clock = get_db(), current_app.config["CLOCK"]
-    return OutboxDispatcher(conn, NotificationService(conn, DatabaseChannel(conn, clock)), clock)
+    return OutboxDispatcher(conn, NotificationService(conn, build_channel(conn, clock, current_app.config)), clock)
 
 
 @bp.after_app_request
@@ -99,6 +101,22 @@ def _default_vehicle() -> str:
     return g.user["vehicle_type"] if g.user else VEHICLE_BEV
 
 
+def _vehicles() -> list[dict]:
+    """Uložená vozidla přihlášeného uživatele (profil), výchozí první."""
+    return VehicleService(get_db()).list(g.user["id"]) if g.user else []
+
+
+def _vehicle_fields(source, default_type=None) -> tuple:
+    """(typ vozu, SPZ, stát) z formuláře nebo JSON: buď uložené vozidlo (vehicle_id), nebo ručně zadané údaje.
+    Cizí / neexistující vozidlo -> NotFoundError."""
+    vehicle_id = source.get("vehicle_id")
+    if vehicle_id not in (None, ""):
+        vehicle = VehicleService(get_db()).get(g.user["id"], vehicle_id)
+        return vehicle["vehicle_type"], vehicle["license_plate"], vehicle["plate_country"]
+    return (source.get("vehicle_type", default_type), source.get("license_plate"),
+            source.get("plate_country") or DEFAULT_COUNTRY)
+
+
 @bp.app_context_processor
 def inject_pending_approvals():
     if g.get("user") and g.user["is_admin"]:
@@ -114,13 +132,23 @@ def index():
     svc = _service()
     now = svc.now()
     suggested = ceil_to_slot(now + timedelta(minutes=30))
+    vehicles = _vehicles()
     form = {
         "date": request.args.get("date") or suggested.date().isoformat(),
         "time": request.args.get("time") or f"{suggested:%H:%M}",
         "slots": request.args.get("slots", type=int) or 2,
         "vehicle_type": request.args.get("vehicle_type") or _default_vehicle(),
         "license_plate": request.args.get("license_plate", ""),
+        "plate_country": request.args.get("plate_country") or DEFAULT_COUNTRY,
+        # bez hledání předvybereme výchozí uložené vozidlo, "" = jiné vozidlo (ručně)
+        "vehicle_id": request.args.get("vehicle_id", str(vehicles[0]["id"]) if vehicles and "time" not in request.args else "")
+        if g.user else "",
     }
+    if form["vehicle_id"]:
+        try:  # OP-01 hledá podle typu vybraného vozidla
+            form["vehicle_type"] = _vehicle_fields(form)[0]
+        except NotFoundError:
+            form["vehicle_id"] = ""
     free_stations, excluded = None, []
     if "time" in request.args:
         try:
@@ -141,6 +169,8 @@ def index():
         time_options=time_options(),
         max_slots=MAX_SLOTS,
         vehicle_types=VEHICLE_TYPES,
+        vehicles=vehicles,
+        countries=COUNTRIES,
         today=now.date(),
         last_day=now.date() + timedelta(days=BOOKING_HORIZON_DAYS),
     )
@@ -163,6 +193,9 @@ def station_detail(station_id: int):
     vehicle_type = request.args.get("vehicle_type") or _default_vehicle()
     if station["is_high_speed"]:
         vehicle_type = VEHICLE_BEV
+    # uložená vozidla: na HPC jen BEV (BR-04), předvybrané je první vozidlo, které na stání smí
+    vehicles = [{**v, "allowed": v["vehicle_type"] == VEHICLE_BEV or not station["is_high_speed"]} for v in _vehicles()]
+    first_allowed = next((str(v["id"]) for v in vehicles if v["allowed"]), "")
     return render_template(
         "station.html",
         station=station,
@@ -180,6 +213,10 @@ def station_detail(station_id: int):
         vehicle_types=(VEHICLE_BEV,) if station["is_high_speed"] else VEHICLE_TYPES,
         vehicle_type=vehicle_type,
         license_plate=request.args.get("license_plate", ""),
+        plate_country=request.args.get("plate_country") or DEFAULT_COUNTRY,
+        countries=COUNTRIES,
+        vehicles=vehicles,
+        vehicle_id=request.args.get("vehicle_id", first_allowed),
         selected_slots=request.args.get("slots", type=int) or 1,
     )
 
@@ -197,7 +234,8 @@ def _confirm_message(svc: ReservationService, reservation_id: int, state: str) -
 @bp.post("/reservations")
 @login_required
 def create_reservation():
-    """OP-02 Create -> DRAFT. JSON {station_id, date, time, slots, vehicle_type, license_plate} -> 201 + rezervace.
+    """OP-02 Create -> DRAFT. JSON {station_id, date, time, slots, vehicle_type, license_plate[, plate_country]}
+    nebo místo vozu a SPZ {vehicle_id} uloženého vozidla -> 201 + rezervace.
     Potvrzení (OP-03) je samostatná akce uživatele."""
     svc = _service()
     if request.is_json:
@@ -209,32 +247,27 @@ def create_reservation():
             return jsonify({"error": "station_id musí být celé číslo."}), 400
         try:
             start = parse_slot_start(data.get("date"), data.get("time"))
-            reservation_id = svc.create(
-                g.user["id"],
-                station_id,
-                start,
-                data.get("slots"),
-                data.get("vehicle_type", g.user["vehicle_type"]),
-                data.get("license_plate"),
-            )
+            vehicle_type, plate, country = _vehicle_fields(data, default_type=g.user["vehicle_type"])
+            reservation_id = svc.create(g.user["id"], station_id, start, data.get("slots"), vehicle_type, plate, country)
         except ReservationError as exc:
             return jsonify({"error": str(exc)}), _status(exc)
         return jsonify(svc.get_reservation(reservation_id)), 201
 
     station_id = request.form.get("station_id", type=int)
-    fields = {k: request.form.get(k, "") for k in ("date", "time", "vehicle_type", "license_plate", "slots")}
+    fields = {k: request.form.get(k, "") for k in
+              ("date", "time", "vehicle_type", "license_plate", "plate_country", "vehicle_id", "slots")}
     if station_id is None:
         flash("Neplatná stanice.", "error")
         return redirect(url_for("main.index"))
     try:
+        vehicle_type, plate, country = _vehicle_fields(fields)
+    except NotFoundError:
+        flash("Vybrané vozidlo už v profilu nemáte.", "error")
+        return redirect(url_for("main.station_detail", station_id=station_id, **{**fields, "vehicle_id": ""}))
+    try:
         start = parse_slot_start(fields["date"], fields["time"])
         reservation_id = svc.create(
-            g.user["id"],
-            station_id,
-            start,
-            request.form.get("slots", type=int),
-            fields["vehicle_type"],
-            fields["license_plate"],
+            g.user["id"], station_id, start, request.form.get("slots", type=int), vehicle_type, plate, country
         )
     except NotFoundError:
         abort(404)
@@ -330,6 +363,107 @@ def notifications_page():
 def notifications_mark_read():
     notifications.mark_all_read(get_db(), g.user["id"])
     return redirect(url_for("main.notifications_page"))
+
+
+# ------------------------------------------------------------------ profil: vozidla a notifikace na telefon
+
+PUSH_TEST_MESSAGE = "Zkušební notifikace z VoltBooku. Takhle vám přijde výsledek schválení nebo zpráva o uvolněném stání."
+
+
+def _ntfy_url() -> str:
+    return (current_app.config.get("NTFY_URL") or "").rstrip("/")
+
+
+def _render_profile(form: dict | None = None, status: int = 200):
+    form = form or {"name": "", "vehicle_type": _default_vehicle(), "plate_country": DEFAULT_COUNTRY, "license_plate": ""}
+    return render_template(
+        "profile.html",
+        vehicles=_vehicles(),
+        vehicle_types=VEHICLE_TYPES,
+        countries=COUNTRIES,
+        form=form,
+        push_topic=notifications.get_push_topic(get_db(), g.user["id"]),
+        ntfy_url=_ntfy_url(),
+    ), status
+
+
+@bp.route("/profile")
+@login_required
+def profile():
+    return _render_profile()
+
+
+@bp.post("/profile/vehicles")
+@login_required
+def add_vehicle():
+    form = {k: request.form.get(k, "") for k in ("name", "vehicle_type", "plate_country", "license_plate")}
+    try:
+        VehicleService(get_db()).add(
+            g.user["id"], form["name"], form["vehicle_type"], form["license_plate"], form["plate_country"] or DEFAULT_COUNTRY
+        )
+    except ReservationError as exc:
+        flash(str(exc), "error")
+        return _render_profile(form, 400)
+    flash(f"Vozidlo {form['name'].strip()} je uložené, při rezervaci ho stačí vybrat.", "success")
+    return redirect(url_for("main.profile"))
+
+
+@bp.post("/profile/vehicles/<int:vehicle_id>/default")
+@login_required
+def default_vehicle(vehicle_id: int):
+    try:
+        VehicleService(get_db()).set_default(g.user["id"], vehicle_id)
+    except NotFoundError:
+        abort(404)
+    return redirect(url_for("main.profile"))
+
+
+@bp.post("/profile/vehicles/<int:vehicle_id>/delete")
+@login_required
+def delete_vehicle(vehicle_id: int):
+    try:
+        VehicleService(get_db()).delete(g.user["id"], vehicle_id)
+    except NotFoundError:
+        abort(404)
+    flash("Vozidlo je smazané. Rezervace, které jste s ním udělali, zůstávají.", "success")
+    return redirect(url_for("main.profile"))
+
+
+@bp.post("/profile/push/enable")
+@login_required
+def enable_push():
+    if not _ntfy_url():
+        flash("Notifikace na telefon nejsou na tomto serveru zapnuté.", "error")
+    else:
+        notifications.enable_push(get_db(), g.user["id"])
+        flash("Notifikace na telefon jsou zapnuté. Teď si téma přidejte v aplikaci ntfy (postup níže).", "success")
+    return redirect(url_for("main.profile") + "#push")
+
+
+@bp.post("/profile/push/disable")
+@login_required
+def disable_push():
+    notifications.disable_push(get_db(), g.user["id"])
+    flash("Notifikace na telefon jsou vypnuté. Zprávy dál najdete v aplikaci.", "success")
+    return redirect(url_for("main.profile") + "#push")
+
+
+@bp.post("/profile/push/test")
+@login_required
+def test_push():
+    topic = notifications.get_push_topic(get_db(), g.user["id"])
+    if not topic or not _ntfy_url():
+        flash("Nejdřív si notifikace na telefon zapněte.", "error")
+        return redirect(url_for("main.profile") + "#push")
+    sender = current_app.config.get("PUSH_SENDER") or notifications.ntfy_send
+    try:
+        sender(f"{_ntfy_url()}/{topic}", PUSH_TEST_MESSAGE)
+    except Exception as exc:
+        current_app.logger.warning("Zkušební push pro uživatele %s se nepovedl: %s: %s", g.user["id"], type(exc).__name__, exc)
+        flash("Zkušební notifikaci se nepodařilo odeslat, služba ntfy teď neodpovídá. Zkuste to za chvíli.", "error")
+    else:
+        flash("Zkušební notifikace je odeslaná. Jestli nepřišla, zkontrolujte téma v aplikaci ntfy.", "success")
+    return redirect(url_for("main.profile") + "#push")
 
 
 # ------------------------------------------------------------------ JSON API

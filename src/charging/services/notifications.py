@@ -4,6 +4,7 @@ ReservationService volá pouze doménové události (reservation_approved, slot_
 NotificationService rozhodne, koho upozornit, a zprávu odešle přes NotificationChannel.
 Výchozí kanál ukládá zprávy do DB (in-app schránka); e-mail/SMS/push provider lze
 doplnit jako další implementaci NotificationChannel bez zásahu do doménové logiky.
+Tak je doplněný PushChannel – kopie zprávy na telefon přes ntfy, když si ji uživatel zapne v profilu.
 
 Napojení podle diagramu případů užití v0.2: OP-04 Cancel (uvolnění slotu, zrušení
 administrátorem) a OP-05 Approve / Reject (výsledek rozhodnutí žadateli). Od C09 (CR-08)
@@ -11,11 +12,19 @@ i propadnutí žádosti podle BR-06.
 """
 from __future__ import annotations
 
+import logging
+import re
+import secrets
 import sqlite3
+import threading
+import urllib.request
 from datetime import datetime
 from typing import Callable, Protocol
 
+from ..db import transaction
 from ..timeutil import format_dt, format_range, format_ts
+
+logger = logging.getLogger(__name__)
 
 
 class NotificationChannel(Protocol):
@@ -32,6 +41,96 @@ class DatabaseChannel:
             "INSERT INTO notifications (user_id, message, created_at) VALUES (?, ?, ?)",
             (user_id, message, format_ts(self.clock())),
         )
+
+
+# ------------------------------------------------------------------ notifikace na telefon (ntfy)
+
+DEFAULT_NTFY_URL = "https://ntfy.sh"
+PUSH_TIMEOUT_S = 5
+_PLATE_IN_MESSAGE = re.compile(r", SPZ [^)]*")
+
+
+def ntfy_send(url: str, text: str) -> None:
+    """Pošle zprávu na téma ntfy (https://docs.ntfy.sh/publish/). Telefon s aplikací ntfy,
+    která téma odebírá, ji ukáže jako notifikaci."""
+    request = urllib.request.Request(
+        url, data=text.encode("utf-8"), method="POST", headers={"Title": "VoltBook", "Tags": "zap"}
+    )
+    with urllib.request.urlopen(request, timeout=PUSH_TIMEOUT_S) as response:
+        response.read()
+
+
+class PushChannel:
+    """Kopie zprávy na telefon pro uživatele, kteří si v profilu zapnuli notifikace (users.push_topic).
+
+    Hlavní kanál zůstává in-app schránka (DatabaseChannel), která jde přes outbox a neztratí se (ADR-01).
+    Push je navíc a posílá se jen jednou: když ntfy nejede, chyba se zaloguje a zpráva v aplikaci zůstane.
+    Kdyby se push opakoval přes outbox, výpadek ntfy by zdržoval každý POST a blokoval i in-app zprávy.
+    Posílá se ve vlákně, aby HTTP volání nedrželo zámek zápisu do DB (dispatcher běží v transakci).
+    SPZ na cizí server neposíláme.
+    """
+
+    def __init__(self, conn: sqlite3.Connection, base_url: str | None, sender: Callable[[str, str], None] = ntfy_send,
+                 background: bool = True):
+        self.conn = conn
+        self.base_url = (base_url or "").rstrip("/")
+        self.sender = sender
+        self.background = background
+
+    def send(self, user_id: int, message: str) -> None:
+        if not self.base_url:
+            return
+        topic = get_push_topic(self.conn, user_id)
+        if topic is None:
+            return
+        args = (user_id, f"{self.base_url}/{topic}", _PLATE_IN_MESSAGE.sub("", message))
+        if self.background:
+            threading.Thread(target=self._deliver, args=args, name="push").start()
+        else:
+            self._deliver(*args)
+
+    def _deliver(self, user_id: int, url: str, text: str) -> None:
+        try:
+            self.sender(url, text)
+        except Exception as exc:  # výpadek ntfy nesmí rozbít doručení do aplikace
+            logger.warning("Push notifikace pro uživatele %s se nepovedla: %s: %s", user_id, type(exc).__name__, exc)
+
+
+class MultiChannel:
+    """Pošle zprávu všemi kanály popořadě (in-app schránka, pak telefon)."""
+
+    def __init__(self, *channels: NotificationChannel):
+        self.channels = channels
+
+    def send(self, user_id: int, message: str) -> None:
+        for channel in self.channels:
+            channel.send(user_id, message)
+
+
+def build_channel(conn: sqlite3.Connection, clock: Callable[[], datetime], config) -> NotificationChannel:
+    """Kanály podle konfigurace aplikace: NTFY_URL (prázdné = push vypnutý), PUSH_SENDER a
+    PUSH_BACKGROUND jen pro testy."""
+    push = PushChannel(conn, config.get("NTFY_URL"), config.get("PUSH_SENDER") or ntfy_send,
+                       config.get("PUSH_BACKGROUND", True))
+    return MultiChannel(DatabaseChannel(conn, clock), push)
+
+
+def get_push_topic(conn: sqlite3.Connection, user_id: int) -> str | None:
+    row = conn.execute("SELECT push_topic FROM users WHERE id = ?", (user_id,)).fetchone()
+    return row["push_topic"] if row else None
+
+
+def enable_push(conn: sqlite3.Connection, user_id: int) -> str:
+    """Vygeneruje nové náhodné téma (funguje jako heslo k odběru – kdo ho zná, vidí zprávy)."""
+    topic = f"voltbook-{secrets.token_urlsafe(16)}"
+    with transaction(conn):
+        conn.execute("UPDATE users SET push_topic = ? WHERE id = ?", (topic, user_id))
+    return topic
+
+
+def disable_push(conn: sqlite3.Connection, user_id: int) -> None:
+    with transaction(conn):
+        conn.execute("UPDATE users SET push_topic = NULL WHERE id = ?", (user_id,))
 
 
 def _describe(res: dict) -> str:
