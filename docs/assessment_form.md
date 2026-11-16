@@ -57,7 +57,7 @@ Criterion: není (vlastní nevymýšlíme)
 | ID | Odpověď | Evidence / komentář |
 |---|---|---|
 | Q1 Criterion je skutečně evaluable | NO | C04 v projektu chybí, concern ani criterion jsme nenašli. |
-| Q2 Measurement měří criterion ve správném contextu | NO |Neměřeno |
+| Q2 Measurement měří criterion ve správném contextu | NO | Neměřeno |
 | Q3 Decision odpovídá výsledku měření | NO | Bez měření nemá rozhodnutí oporu → F2. |
 
 ## C05 — Detailed Design & Unit Verification
@@ -114,6 +114,6 @@ Result: REJECTED CANDIDATE
 
 | Finding | ACCEPTED / REJECTED / DEFERRED | Reason/evidence | Action / no-change |
 |---|---|---|---|
-| F1 | ACCEPTED – change required | Potvrzeno i naším testem: `pending()` bere jen `attempts < 5`, takže po 5 neúspěšných pokusech se událost už nikdy nedoručí. ADR-01 přitom slibuje, že se zpráva neztratí. | Opraveno. Dispatch po POST dál zkouší jednu událost nejvýš 5× (aby nedoručitelná zpráva nebrzdila každý request), ale `scripts/dispatch_notifications.py` bere všechny nedoručené (`dispatch(max_attempts=None)`). Zpráva tak v outboxu čeká, dokud se nedoručí. Nový test `test_adr01_event_over_attempt_limit_is_not_lost_and_script_delivers_it` (bez opravy padá), ADR-01 a D5 doplněné. |
-| F2 | ACCEPTED – change required | C04 jsme na cvičení nedělali, v projektu opravdu chybělo. | C04 jsme doplnili zpětně: quality concern (souběh, future pressure Q), kritérium K1–K3, měření `scripts/measure_c04.py`, rozhodnutí D9. Evidence C04 v `docs/evidence-and-evolution.md`, tag `v0.4.0`. |
-| F3 | ACCEPTED – change required (hodnotitelé ho zamítli, ale souhlasíme, že specifikace má být v repu) | Specifikace v0.1 / v0.2 byla jen v `cv2.docx` mimo repo. | Specifikaci jsme z docx přepsali do Markdownu do `docs/intent-and-change.md` (sekce CV2), včetně diagramů v0.1 a tabulky, kde jsou požadavky ověřené. |
+| F1 | ACCEPTED – change required | Sedí, po 5 pokusech zpráva zůstala viset a nikdo ji už neposlal. Ověřili jsme si to testem. | Opraveno. Dispatch po POST dál zkouší jednu událost nejvýš 5×, ale `scripts/dispatch_notifications.py` bere všechny nedoručené (`dispatch(max_attempts=None)`). Zpráva tak čeká, dokud se nedoručí. |
+| F2 | ACCEPTED – change required | C04 jsme na cvičení nedělali, chybělo zadání. | C04 jsme doplnili zpětně, tag `v0.4.0`. |
+| F3 | ACCEPTED – change required | Specifikace v0.1 / v0.2 byla jen v `cv2.docx` mimo repo. | Specifikaci jsme z docx přepsali do Markdownu do `docs/intent-and-change.md`. |

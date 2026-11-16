@@ -339,3 +339,102 @@ Remaining evidence gaps:
 
 Commit/tag:
 - větev `c06-assessment-fixes`, tag `v0.6.0`
+
+---
+
+# CV7 (C07–C08)
+
+## C07 — Ověření C06 findings
+
+Assessed baseline (C06): `v0.5.0` (`b6cdfd4`).
+Reporting baseline (A i C): `main` `8e60b8c` (kód = `v0.6.0`). Ověřeno 2. 11. 2026: `pytest` 102 passed, `scripts/verify_c02.py` 14/14, `scripts/measure_c04.py` exit 0.
+
+| C06 | Claim | Expected ↔ Observed | Evidence (`v0.5.0` → reporting) | Decision | Action + owner |
+| --- | --- | --- | --- | --- | --- |
+| F1 | ADR-01: zpráva se při výpadku Notification Service neztratí | E: událost čeká v outboxu, dokud se nedoručí · O: po 5 pokusech ji nevybere ani dispatch po POST, ani `dispatch_notifications.py` | `v0.5.0`: repro test (5× výpadek → `dispatch()` jako skript → zpráva nedorazí) **padá** · `8500a69`: `test_adr01_event_over_attempt_limit_is_not_lost_and_script_delivers_it` prochází | VERIFIED FINDING → ACCEPT | opraveno v `8500a69`, J. Staněk. Zbývá issue I-01 |
+| F2 | C04: concern → criterion → měření → rozhodnutí | E: C04 v repu · O: ve `v0.5.0` chybí | `git ls-tree v0.5.0 scripts/` bez `measure_c04.py` · `50a1579` sekce CV4, D9; přeměřeno 2. 11. na `8e60b8c`: K1–K3 OK, p95 OP-03 315 ms | VERIFIED FINDING → ACCEPT | doplněno zpětně v `50a1579` (proto je tag `v0.4.0` novější než `v0.5.0`), J. Staněk |
+| F3 | Specifikace v0.2 je v repu | E: text OP/REQ v repu · O: jen `cv2.docx` (v `.gitignore`) | `v0.5.0`: `intent-and-change.md` 62 řádků bez REQ · `50a1579`: sekce CV2, 532 řádků | REJECTED CANDIDATE → ACCEPT (opraveno i tak) | J. Staněk, uzavřeno |
+
+Open issues:
+- **I-01:** `scripts/dispatch_notifications.py` nespouští žádný plánovač → po 5 neúspěšných pokusech zpráva čeká, dokud skript někdo nespustí ručně. Owner J. Staněk, akce P2.
+- **I-02:** propadání (AD-1) je líné (`expire_overdue()` až při requestu) a o EXPIRED žádosti se žadatel nedozví. Známé od C03. Notifikaci doplníme (akce P1) a jestli má žádost místo propadnutí eskalovat, se zeptáme na C08 (R-01). Owner J. Staněk.
+
+## A — Technical Design Review (co ukážeme)
+
+Jedna linie: REQ-04 + BR-02 → OP-03 Confirm / OP-05 Approve, baseline `8e60b8c`.
+
+| Krok | Evidence |
+| --- | --- |
+| 1 Scope | [intent-and-change.md](intent-and-change.md) CV2: OP-03, změna v0.2 (DC/HPC → PENDING_APPROVAL), `state_v02.png`, `verify_c02.py` 14/14 |
+| 2 Architecture | C03: drivery DR-1 (souběh) a výpadek NS, ADR-01 outbox, `c03_static.png`, `c03_sequence.png`, `tests/test_architecture.py` |
+| 3 Detailed Design | C05: `ConfirmationPolicy.decide()` + `AvailabilityPolicy.evaluate()` v `services/policies.py`, `c05_structure.png`, `tests/test_confirmation_design.py` (22) |
+| 4 Verification | pozitivní `test_op03_ac_draft_without_collision_is_confirmed_immediately`, hraniční `test_branch_approval_deadline_boundary` (09:45 vs 09:45:01), REQ-04 `test_op03_req04_concurrent_confirms_allow_exactly_one`, C04 `measure_c04.py` |
+| 5 C06 | F1: repro padá na `v0.5.0`, oprava `8500a69` + regresní test, zbývá I-01 |
+
+## Registr rizik — C07/C08
+
+### R-01
+- **Popis rizika:** Žádosti na DC/HPC schvaluje jediný admin do T_start − 15 min (BR-06) a specifikace neříká, co když nerozhodne (otevřený předpoklad z C02) → žádost propadne do EXPIRED a k tomu neposíláme žádnou notifikaci (D7, I-02) → řidič se to dozví až v aplikaci, nebo až u stanice.
+- **Kategorie:** Scope / Requirements
+- **Počáteční riziko (L/I/priorita/důvod):** L=2 (jeden admin, žádné připomenutí, noc a víkend), I=2 (uživatel přijde o rezervaci, BR-02 to neporuší) → MEDIUM (4)
+- **Strategie ošetření a zdůvodnění:** MITIGATE – dopad snížíme tím, že se to žadatel dozví včas
+- **Opatření, vlastník, termín:** při přechodu PENDING_APPROVAL → EXPIRED zapsat do outboxu událost o propadnutí (P1) a pouštět `expire_overdue()` + dispatch plánovačem každých 5 min (P2); na C08 se zeptat, jestli má žádost místo propadnutí eskalovat; owner J. Staněk, do 9. 11. 2026
+- **Důkaz účinnosti a stav ověření:** zatím žádný; ověří ho test „žádost propadne bez requestu a žadatel dostane zprávu“
+- **Očekávané reziduální riziko:** L=2, I=1 → LOW (2)
+- **Skutečné reziduální riziko / NOT VERIFIED:** NOT VERIFIED
+- **Přijetí reziduálního rizika, vlastník, zdůvodnění:** J. Staněk po odpovědi cvičícího
+- **Monitoring, trigger, contingency, další review:** trigger: EXPIRED žádost bez zprávy v `notifications`, nebo cvičící chce eskalaci; review 9. 11.
+
+### R-02
+- **Popis rizika:** Stejná pravidla (BR-02, BR-04, schvalování DC/HPC, přechody stavů) máme ve službě (`services/policies.py`) i v triggerech (`schema.sql`, D2) → při další změně pravidla, jako byla změna C02, se upraví jen jedno místo → DB odmítne operaci, kterou služba povolila (uživatel dostane chybu místo hlášky), nebo pojistka přestane chránit.
+- **Kategorie:** Technical / Quality
+- **Počáteční riziko (L/I/priorita/důvod):** L=2 (pravidla se už jednou měnila, C05 to vede jako zbývající riziko), I=2 (rozbitá operace nebo slabší ochrana BR-02) → MEDIUM (4)
+- **Strategie ošetření a zdůvodnění:** MITIGATE – rozdíl musí odhalit test, ne uživatel
+- **Opatření, vlastník, termín:** test shody: stejné příklady pro BR-02, BR-04 a schvalování pustit přes službu i přímo proti DB (INSERT/UPDATE mimo službu) a porovnat výsledek (P3); owner Š. Exner, do 9. 11. 2026
+- **Důkaz účinnosti a stav ověření:** `test_db_triggers_enforce_approval_policy_overlap_and_transitions` dnes ověřuje triggery, ale ne shodu s policy → NOT VERIFIED
+- **Očekávané reziduální riziko:** L=1, I=2 → LOW (2)
+- **Skutečné reziduální riziko / NOT VERIFIED:** NOT VERIFIED
+- **Přijetí reziduálního rizika, vlastník, zdůvodnění:** Š. Exner
+- **Monitoring, trigger, contingency, další review:** trigger: změna pravidla ve specifikaci nebo v `policies.py` bez změny `schema.sql`
+
+### R-03
+- **Popis rizika:** SQLite pustí jeden zápis najednou (D1, D9) a C04 jsme měřili jen na jednom notebooku s vývojovým serverem → při vyšší zátěži nebo na slabším stroji přesáhne p95 potvrzení 500 ms (při 100 klientech už 583 ms) → kritérium C04 přestane platit.
+- **Kategorie:** Technical / Quality
+- **Počáteční riziko (L/I/priorita/důvod):** L=1 (10× dnešní špičky splněno ve 4 bězích, 25. 10. i 2. 11.; víc provozu nečekáme), I=2 (pomalejší potvrzení, BR-02 drží i při 100 klientech) → LOW (2)
+- **Strategie ošetření a zdůvodnění:** ACCEPT – limit nad 10× je vědomý (D9), jiná DB by byla nepřiměřená
+- **Opatření, vlastník, termín:** přeměřit `measure_c04.py` na druhém stroji (P4); owner D. Volný, do 9. 11. 2026
+- **Důkaz účinnosti a stav ověření:** `measure_c04.py` 2. 11. na `8e60b8c` exit 0 (p95 315 ms), druhý stroj zatím ne
+- **Očekávané reziduální riziko:** L=1, I=2 → LOW (2)
+- **Skutečné reziduální riziko / NOT VERIFIED:** LOW (2), beze změny (přijaté riziko)
+- **Přijetí reziduálního rizika, vlastník, zdůvodnění:** J. Staněk – kritérium platí pro 50 klientů, 20× není požadavek
+- **Monitoring, trigger, contingency, další review:** přeměřit po každé změně `db.py` nebo `services/`; trigger: `measure_c04.py` exit ≠ 0
+
+### R-04
+- **Popis rizika:** Když Notification Service nejede déle než 5 pokusů, dispatch po POST zprávu vzdá a doručí ji až skript, který zatím nikdo automaticky nespouští (I-01); doručení je navíc „aspoň jednou“ (ADR-01) → zpráva o schválení nebo zamítnutí dorazí pozdě, u skutečného providera i dvakrát.
+- **Kategorie:** External dependency
+- **Počáteční riziko (L/I/priorita/důvod):** L=1 (dnes je Notification Service kanál do vlastní DB, výpadek jsme viděli jen v testech), I=2 (žadatel neví výsledek, rezervace sama je v pořádku) → LOW (2)
+- **Strategie ošetření a zdůvodnění:** MITIGATE – levné, plánovač stejně potřebujeme kvůli R-01
+- **Opatření, vlastník, termín:** Plánovač úloh pouští `dispatch_notifications.py` každých 5 min (P2); owner J. Staněk, do 9. 11. 2026
+- **Důkaz účinnosti a stav ověření:** regresní test F1 prochází (`8500a69`), běh plánovače NOT VERIFIED
+- **Očekávané reziduální riziko:** L=1, I=1 → LOW (1)
+- **Skutečné reziduální riziko / NOT VERIFIED:** NOT VERIFIED
+- **Přijetí reziduálního rizika, vlastník, zdůvodnění:** J. Staněk
+- **Monitoring, trigger, contingency, další review:** trigger: v outboxu událost s `attempts >= 5` a `sent_at IS NULL`, nebo přechod na skutečný e-mail / SMS
+
+### R-05
+- **Popis rizika:** Neukládáme, kdo žádost schválil nebo zamítl (jen `updated_at`, AD-4 z C02), a `_decide()` kontroluje jen roli, takže admin smí schválit i vlastní žádost → při sporu nejde dohledat, kdo rozhodl, a admin si může rychlou stanici přidělit sám.
+- **Kategorie:** Security / Privacy
+- **Počáteční riziko (L/I/priorita/důvod):** L=1 (jeden admin, školní provoz), I=2 (obejití schvalování v0.2) → LOW (2)
+- **Strategie ošetření a zdůvodnění:** ACCEPT – pro CP1 a jednoho admina to stačí; roli admina kontroluje server (V9, `test_op05_non_admin_cannot_approve_or_reject`)
+- **Opatření, vlastník, termín:** nic pro CP1; při víc adminech přidat `decided_by` / `decided_at` a zákaz schvalovat vlastní žádost; owner J. Staněk
+- **Důkaz účinnosti a stav ověření:** přijaté riziko, není co ověřovat
+- **Očekávané reziduální riziko:** L=1, I=2 → LOW (2)
+- **Skutečné reziduální riziko / NOT VERIFIED:** LOW (2), přijato
+- **Přijetí reziduálního rizika, vlastník, zdůvodnění:** J. Staněk – jeden admin, fiktivní data
+- **Monitoring, trigger, contingency, další review:** trigger: druhý admin, reálný provoz, nebo cvičící řekne, že vlastní žádost admin schválit nesmí
+
+Předpoklady (nejsou rizika): uživatelé dodrží časy rezervace (C01), fyzické ověření auta a SPZ na místě zůstává neznámá (C01, D8).
+
+## C — Project Status Report
+
+[c08-project-status.pptx](c08-project-status.pptx), stejná baseline `8e60b8c` a stejné F1–F3, R-01–R-05.
