@@ -591,41 +591,39 @@ Nové AC i regrese prošly lokálně, v čistém checkoutu i v CI na GitHubu a C
 
 ## C10 — Provozní situace a logy
 
-**Testovaný commit:** první běh na `30d4645` (kód = `v0.9.0`), po doplnění logu znovu na `50100c6`. 16. 11. 2026, Windows 11, Python 3.14.7.
+**Testovaný commit:** `30d4645` (= `v0.9.0`), po doplnění logu znovu `50100c6`. 16. 11. 2026, Windows 11, Python 3.14.7.
 
-**Jak:** aplikace spuštěná jako `python run.py` (samostatný proces, vývojový server) s vlastní testovací DB přes `DATABASE_PATH` v dočasném adresáři, `SECRET_KEY` testovací, stdout/stderr do souboru `server.log`. Operace jsme posílali přes HTTP jako prohlížeč (přihlášení demo účtů `ridic_ev` a `ridic_phev`, CSRF, JSON), rezervace na zítřek 17. 11. Stav jsme po každé situaci četli zvlášť přímo z SQLite (`sqlite3`, nové spojení). Výpadek DB jsme udělali tak, že jiný proces otevřel stejnou DB a držel ji 25 s zamčenou (`BEGIN EXCLUSIVE`), pak zámek pustil – jen na testovacích datech.
+**Jak:** aplikaci jsme spustili přes `python run.py` s vlastní testovací databází. Rezervace jsme dělali přes HTTP pod demo účty `ridic_ev` a `ridic_phev`. Po každé situaci jsme stav zkontrolovali přímo v databázi. Výpadek databáze jsme nasimulovali tak, že ji jiný proces na 25 s zamkl.
 
 | Situace | Očekávaný a skutečný výsledek | Jak jsme správnost ověřili | Co ukazují logy / je log potřeba? |
 | --- | --- | --- | --- |
-| Úspěšné potvrzení | Oček.: AC 01 [10:00, 11:00) vytvořit (201 DRAFT) a potvrdit (200 CONFIRMED). Skut.: 201 DRAFT → 200 CONFIRMED. | odpověď JSON + `SELECT` z DB: #1 AC 01 [10:00, 11:00) CONFIRMED | jen řádek přístupového logu `POST /reservations/1/confirm … 200`. Víc logovat není potřeba, správnost dokazuje odpověď a stav v DB. |
-| Zamítnutá kolize | Oček.: PHEV potvrzuje AC 01 [10:30, 11:00) → 409, návrh zůstane DRAFT. Skut.: 409 „Termín se na této stanici překrývá…“, #2 DRAFT. | DB: #1 CONFIRMED beze změny, #2 DRAFT, 0 překryvů v blokujícím stavu | přístupový log `… /reservations/2/confirm … 409`. Je to běžné doménové zamítnutí, ne chyba – uživatel dostane důvod v odpovědi a stav je v DB. Zvláštní záznam nepřidáváme, byl by to jen šum. Audit by dával smysl spíš u rozhodnutí admina (R-05), to tu nebylo. |
-| Technická porucha a obnova | Oček.: během výpadku vytvoření rezervace AC 02 selže chybou serveru a nic se nezapíše; po obnovení po kontrole stavu projde. Skut.: 500 Internal Server Error po 21 s; DB po obnovení: rezervací pořád 2, na AC 02 žádná → zopakováno: 201 DRAFT → 200 CONFIRMED. | před opakováním jsme nejdřív přečetli DB (počet rezervací a AC 02), abychom zápis neopakovali naslepo | `ERROR charging: Exception on /reservations [POST]` s časem, místem (`auth.py`, `load_logged_in_user` – první čtení z DB) a typem `sqlite3.OperationalError: database is locked`, pak přístupový log `500`. Z logu je poznat kdy, kde a jak aplikace reagovala. Že se nic nezapsalo, z logu poznat nejde – to jsme ověřili v DB. |
-| Restart aplikace | Oček.: po zastavení a novém startu potvrzené rezervace #1 a #3 zůstanou CONFIRMED a další operace projde. Skut.: #1 a #3 CONFIRMED (API i DB), nová rezervace AC 03 201 → 200 CONFIRMED. | `GET /api/reservations/<id>` + `SELECT` z DB před a po restartu | v prvním běhu byl start vidět jen jako `* Serving Flask app 'charging'` bez času a bez informace o DB, zastavení vůbec. Doplnili jsme záznam o startu (viz níže) a pokus zopakovali. Zastavení v logu není dál – proces jsme ukončili natvrdo (jako zavření okna), aplikace nemá šanci nic zapsat. Restart poznáme podle nového řádku „start“. |
+| Úspěšné potvrzení | **Čekali jsme:** rezervace se vytvoří a potvrdí.<br>**Stalo se:** vytvořena (201) a potvrzena (200). | odpověď aplikace + v DB je rezervace CONFIRMED | v logu je jen řádek s `200`. Víc není potřeba. |
+| Zamítnutá kolize | **Čekali jsme:** druhá rezervace na stejný čas se odmítne.<br>**Stalo se:** odmítnuta (409 „Termín se překrývá…“). | v DB je první rezervace pořád CONFIRMED, druhá zůstala jako návrh | v logu jen řádek s `409`. Je to běžné odmítnutí, ne chyba – uživatel důvod vidí v odpovědi. Zvláštní záznam by byl jen šum. |
+| Technická porucha a obnova | **Čekali jsme:** při zamčené DB rezervace selže a nic se neuloží, po odemčení projde.<br>**Stalo se:** chyba 500, nic se neuložilo. Po odemčení prošla. | před opakováním jsme v DB zkontrolovali, že se nic nezapsalo – až pak jsme to zkusili znovu | log ukazuje čas, místo (`auth.py`), chybu `database is locked` a odpověď `500`. Že se nic neuložilo, z logu nepoznáme. |
+| Restart aplikace | **Čekali jsme:** po restartu potvrzené rezervace zůstanou a půjde vytvořit další.<br>**Stalo se:** zůstaly, nová rezervace prošla. | stav rezervací v DB před a po restartu | start nebyl v logu skoro vidět (bez času), tak jsme přidali jeden řádek při startu a zkusili to znovu. Zastavení v logu není – proces jsme ukončili natvrdo. |
 
-**Doplněný log (commit `d008833` a `50100c6`, `run.py`):** logger aplikace má čas u každého záznamu a při startu se zapíše jeden řádek. Do logu jde jen název souboru DB, plná cesta obsahuje jméno uživatele. První verze nastavila formát globálně a Werkzeug pak psal do souboru ANSI barvy, proto `50100c6` formát omezuje jen na logger `charging`.
+**Co jsme v logu doplnili** (`run.py`, commity `d008833` a `50100c6`): čas u záznamů aplikace a jeden řádek při startu. Do logu jde jen název souboru DB, ne celá cesta (obsahuje jméno uživatele).
 
-Výřez logu po doplnění (běh na `50100c6`, cesty zkrácené):
+Výřez logu:
 ```
 2026-11-16 10:32:04,538 INFO charging: VoltBook start: databáze c10.db, schéma v5
 127.0.0.1 - - [16/Nov/2026 10:32:05] "POST /reservations/2/confirm HTTP/1.1" 409 -
 2026-11-16 10:32:16,509 ERROR charging: Exception on /reservations [POST]
   File "src\charging\auth.py", line 29, in load_logged_in_user
 sqlite3.OperationalError: database is locked
-2026-11-16 10:32:26,994 ERROR charging: Outbox dispatch failed
-sqlite3.OperationalError: database is locked
 127.0.0.1 - - [16/Nov/2026 10:32:26] "POST /reservations HTTP/1.1" 500 -
 2026-11-16 10:32:33,162 INFO charging: VoltBook start: databáze c10.db, schéma v5
-127.0.0.1 - - [16/Nov/2026 10:32:33] "GET /api/reservations/1 HTTP/1.1" 200 -
 ```
+Řádek 1 je start, 2 kolize, 3–6 výpadek DB a 7 start po restartu.
 
-**Nález z logu (I-03, otevřené):** po chybě 500 ještě běží doručování outboxu po POST (`after_request`), které na zamčené DB čeká dalších 10 s. Uživatel tak na chybu čekal 21 s místo 10 s a v logu jsou k jednomu requestu dvě chyby. Oprava by byla malá (po odpovědi 5xx outbox nedoručovat), ale zatím jsme ji nedělali – jen zapisujeme.
+**Nález (I-03, otevřené):** po chybě 500 aplikace ještě zkouší odeslat notifikace (outbox) a na zamčené DB čeká dalších 10 s. Uživatel tak na chybu čekal 21 s místo 10 s. Zatím neopraveno.
 
-Ověřeno i po změně `run.py`: `pytest` 107 passed, `verify_c02.py` 14/14, `verify_c08.py` 29/29, `measure_c04.py` (spouští `run.py`) splněno, p95 OP-03 280 ms, 0 výjimek v logu. Nic nebylo BLOCKED. Neověřili jsme řádné zastavení přes Ctrl+C.
+Po změně `run.py` všechny testy dál prochází (`pytest` 107 passed). Nic nebylo BLOCKED.
 
 **Shrnutí:**
-- *Co logovat:* technické chyby (výjimky, nedoručená notifikace z outboxu) a start aplikace s tím, nad jakou DB běží. Úspěch a doménové zamítnutí (409) stačí přístupový log a odpověď, vlastní záznam by byl jen šum. Rozhodnutí admina by časem chtělo audit (R-05), ale to je jiná věc než provozní log.
-- *Co jsme z logů opravdu zjistili:* kdy a kde výpadek DB nastal (první čtení uživatele v `auth.py`), jakou chybou (`database is locked`) a že aplikace odpověděla 500. Taky že outbox po chybě zbytečně čeká (I-03). Po doplnění i kdy aplikace startovala a s jakou DB.
-- *Co jsme museli ověřit jinak:* že se při výpadku nic nezapsalo, že kolize nechala stav beze změny a že rezervace přežily restart – to log neřekne, to jsme četli přímo z DB.
+- *Co logovat:* technické chyby a start aplikace. Úspěch a běžné odmítnutí (409) ne, stačí odpověď aplikace.
+- *Co jsme z logů zjistili:* kdy a kde nastal výpadek DB, co to bylo za chybu a že aplikace vrátila 500. Taky že po chybě zbytečně čeká odesílání notifikací (I-03).
+- *Co jsme museli ověřit jinak:* že se při výpadku nic neuložilo, že kolize nic nezměnila a že rezervace přežily restart. To log neřekne, to jsme viděli až v databázi.
 
 ---
 
