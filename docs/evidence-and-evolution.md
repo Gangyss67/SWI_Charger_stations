@@ -572,7 +572,7 @@ python run.py + GET http://127.0.0.1:<port>/login               -> 200, instance
 ```
 Nic jsme ručně nedoplňovali, stačilo README. Provedl J. Staněk (autor změny), takže to není nezávislá reprodukce. **DOPLNIT:** stejný postup od druhého člena týmu na jeho počítači (kdo, kdy, výsledek).
 
-**CI:** `.github/workflows/ci.yml` (push + PR, Ubuntu, Python 3.14: pip install, `pytest -v`, `verify_c02.py`, `verify_c08.py`). Stav: **NOT RUN** – větev `c08-c10` zatím není na GitHubu. Stejné příkazy prošly lokálně i v čistém checkoutu (exit 0). **DOPLNIT** po push: odkaz na běh a výsledek.
+**CI:** `.github/workflows/ci.yml` (push + PR, Ubuntu, Python 3.14: pip install, `pytest -v`, `verify_c02.py`, `verify_c08.py`). Stav: **PASS** – po push tagu `v0.9.0` (16. 11. 2026 09:42 UTC) běh [43842142344](https://github.com/Gangyss67/SWI_Charger_stations/actions/runs/43842142344) na commitu `9e81db9`: všechny kroky (závislosti, pytest, `verify_c02.py`, `verify_c08.py`) success, job trval 24 s. Stejně prošel i běh [43842141889](https://github.com/Gangyss67/SWI_Charger_stations/actions/runs/43842141889) na hlavě větve `c08-c10` (`ca0909a`). Je to druhé prostředí (Ubuntu na GitHubu), takže testy nezávisí na našem Windows.
 
 **Artefakt:** tag `v0.9.0`, commit `9e81db930095fbedcf4822503e52cd6d5c5eddce`, strom `a86fb9cd23c47feb7afdfa6ae175a3f7540ab2b8`. Balík zdrojáků `git archive --format=zip --prefix=voltbook-v0.9.0/ v0.9.0` → SHA-256 `36aefa4602b372ec78f372b40f30bafcd9964beed4564659b49302aaf63e62b9` (vytvořený dvakrát, hash stejný). Build krok Python aplikace nemá, artefakt = zdrojáky + závislosti výše + schéma v5. Migrace není potřeba.
 
@@ -583,7 +583,7 @@ Nic jsme ručně nedoplňovali, stačilo README. Provedl J. Staněk (autor změn
 - R-01 z C07: opatření P1 je IMPLEMENTED a VERIFIED (testy výše), P2 (plánovač) DEFERRED. Reziduální riziko odhadujeme na L=2, I=1 → LOW (2) přes den, v noci bez provozu zůstává jako dřív.
 
 **Rozhodnutí o release candidate:** **CONDITIONAL** – owner J. Staněk, 16. 11. 2026.
-Nové AC i regrese prošly lokálně i v čistém checkoutu a C04 platí. Chybí ale: (1) review diffu druhým členem, (2) zelený běh CI na GitHubu, (3) čistý checkout od druhého člena. Když budou všechny tři v pořádku, bude to READY. Když CI nebo review najde problém s AC, HOLD a vracíme se k CR-08. Nezamčené nepřímé závislosti bereme jako známé omezení.
+Nové AC i regrese prošly lokálně, v čistém checkoutu i v CI na GitHubu a C04 platí. Chybí ale: (1) review diffu druhým členem, (2) čistý checkout od druhého člena. Když budou oba v pořádku, bude to READY. Když CI nebo review najde problém s AC, HOLD a vracíme se k CR-08. Nezamčené nepřímé závislosti bereme jako známé omezení.
 
 ---
 
