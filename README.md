@@ -52,6 +52,7 @@ Typ vozidla u účtu je jen výchozí hodnota – typ vozu a SPZ se zadávají u
 ```powershell
 .\.venv\Scripts\python.exe -m pytest
 .\.venv\Scripts\python.exe scripts\verify_c02.py     # příklady ověření baseline v0.2 přes HTTP (exit 0 = OK)
+.\.venv\Scripts\python.exe scripts\verify_c08.py     # C08 – test casy TC-C08-01/02 přes HTTP + kontrola stavu přímo v DB (exit 0 = OK)
 .\.venv\Scripts\python.exe scripts\dispatch_notifications.py   # doručí nedoručené notifikace z outboxu
 .\.venv\Scripts\python.exe scripts\measure_c04.py    # C04 – měření souběžného potvrzování, cca 1 min (exit 0 = kritérium splněno)
 ```
@@ -118,9 +119,10 @@ README.md
 requirements.txt, pytest.ini, run.py
 docs/
   intent-and-change.md          Project Frame + future pressure (C01), specifikace OP-01..OP-05,
-                                BR-01..BR-06, baseline v0.1 a v0.2 + dopad změny (C02)
+                                BR-01..BR-06, baseline v0.1 a v0.2 + dopad změny (C02), change request CR-08 (C08)
   architecture-and-decisions.md rozhodnutí, architektura (C03), D9 (C04) a detailní návrh (C05)
-  evidence-and-evolution.md     evidence C01 (spike), C02, C03, C04 (měření), C05 a C06 (reakce na nálezy)
+  evidence-and-evolution.md     evidence C01 (spike), C02, C03, C04 (měření), C05, C06 (reakce na nálezy),
+                                C07 (ověření nálezů, rizika), C08 (baseline a test casy)
   assessment_form.md            C06 – hodnocení od týmu ParkingCrew + naše disposition
   diagrams/                     use case, stavové a aktivitní diagramy v0.1/v0.2 (C02),
                                 diagramy architektury c03_* a detailního návrhu c05_* (PlantUML + PNG)
@@ -138,6 +140,7 @@ src/charging/
   templates/, static/
 scripts/spike_persistence.py    C01 spike A – persistence
 scripts/verify_c02.py           C02 – příklady ověření baseline v0.2 přes HTTP
+scripts/verify_c08.py           C08 – krokované test casy TC-C08-01/02 (BR-02)
 scripts/dispatch_notifications.py  C03 – opakované doručení notifikací z outboxu
 scripts/measure_c04.py          C04 – měření souběžného potvrzování (kritérium K1–K3)
 tests/                          pytest testy (test_architecture.py = pravidlo z ADR-01, test_confirmation_design.py = C05)

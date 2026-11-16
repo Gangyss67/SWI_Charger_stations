@@ -11,7 +11,7 @@ What we did:
 - Napsali jsme skript [scripts/spike_persistence.py](../scripts/spike_persistence.py), který smaže a znovu vytvoří `instance/spike.db`, založí schéma, přes `ReservationService` vytvoří rezervaci na HPC 08 (2 sloty) a projde ji stavy DRAFT → PENDING → CONFIRMED, **zavře spojení**.
 - Otevře nové spojení, načte řádek a zkontroluje stav, stanici a délku 60 min.
 - Zkusí přímým SQL `INSERT` (mimo službu) vložit překrývající CONFIRMED rezervaci na stejnou stanici.
-- Spuštěno příkazem `.\.venv\Scripts\python.exe scripts\spike_persistence.py` (Windows 11, Python 3.14.7). Stejný scénář je trvale v automatických testech (`tests/test_reservations.py::test_db_trigger_blocks_overlapping_confirmed_even_without_service`, `tests/test_web.py::test_cp1_walking_skeleton_post_reservation_returns_id_and_persists`).
+- Spuštěno příkazem `.\.venv\Scripts\python.exe scripts\spike_persistence.py` (Windows 11, Python 3.14.7). Stejný scénář je trvale v automatických testech (`tests/test_reservations.py::test_db_trigger_blocks_overlapping_confirmed_even_without_service`, `tests/test_web.py::test_cp1_walking_skeleton_post_reservation_returns_id_and_persists`). *(Pozn. z kontroly v C08: první test jsme v C02 nahradili testem `test_db_triggers_enforce_approval_policy_overlap_and_transitions`, který kontroluje i triggery v0.2.)*
 
 Observed result:
 ```
@@ -438,3 +438,63 @@ Předpoklady (nejsou rizika): uživatelé dodrží časy rezervace (C01), fyzick
 ## C — Project Status Report
 
 [c08-project-status.pptx](c08-project-status.pptx), stejná baseline `8e60b8c` a stejné F1–F3, R-01–R-05.
+
+---
+
+# CV8 (C08)
+
+Change Card CR-08 (request, dopady, varianty, rozhodnutí) je v [intent-and-change.md](intent-and-change.md), CV8. Tady je výchozí baseline a test casy.
+
+## Výchozí baseline (before)
+
+- **Commit / tag:** `v0.8.0`, větev `c08-c10`. Kód aplikace (`src/`) je stejný jako `v0.6.0` (`8e60b8c`, `git diff v0.6.0 -- src` je prázdný), v C08 přibyly jen dokumenty a `scripts/verify_c08.py`.
+- **Specifikace:** v0.2 – BR-02 (v0.2), BR-06, OP-03 a OP-05 v [intent-and-change.md](intent-and-change.md), stavový diagram `diagrams/state_v02.png`. Architektura: ADR-01, D7, G3 v [architecture-and-decisions.md](architecture-and-decisions.md).
+- **Runtime:** Windows 11, Python 3.14.7, SQLite 3.50.4; Flask 3.1.3, Werkzeug 3.1.8, Jinja2 3.1.6, pytest 9.1.1 (`pip freeze` z `.venv`).
+- **DB schéma:** `src/charging/schema.sql`, `PRAGMA user_version = 5`.
+- **Data:** každý běh si založí novou DB v dočasném adresáři (schéma + 10 stanic + demo účty `admin`, `ridic_ev`), účet `ridic_ev2` se zaregistruje přes `/register`. Rezervace se připraví přes HTTP API. Hodiny jsou řízené, „teď“ = 15. 9. 2026 08:00. Hesla jsou jen demo účty z README, `SECRET_KEY` je testovací hodnota.
+- **Příkazy:** `python scripts/verify_c08.py` (TC-C08-01/02), `python -m pytest` → 102 passed, `python scripts/verify_c02.py` → 14/14. Spuštěno 16. 11. 2026.
+
+## C08 / TC-C08-01 — navazující rezervace, schválení adminem
+
+- **Test basis:** BR-01 (intervaly [start, end), navazující nekolidují), BR-02 v0.2, OP-05 REQ-07 (v0.2). Riziko: R-02 (pravidla ve službě i v DB).
+- **Baseline:** viz výše, `python scripts/verify_c08.py`.
+- **Předpoklady:** izolovaná DB; B1 = `ridic_ev` HPC 08 [10:00, 11:00) vytvořená, potvrzená a schválená adminem (CONFIRMED); B2 = `ridic_ev2` HPC 08 [11:00, 12:00) vytvořená a potvrzená (PENDING_APPROVAL, lhůta 09:45). Role: admin schvaluje.
+- **Data:** 15. 9. 2026, lokální čas serveru (D3), HPC 08 (150 kW, vyžaduje schválení), oba vozy BEV.
+
+| # | Akce | Očekáváno (napsáno před během) | Skutečně | Důkaz |
+| --- | --- | --- | --- | --- |
+| 1 | reset (nová DB) a příprava B1, B2 přes API | B1 CONFIRMED, B2 PENDING_APPROVAL | B1 #1 CONFIRMED, B2 #2 PENDING_APPROVAL | výstup skriptu |
+| 2 | nezávislé čtení z DB (nové `sqlite3` spojení) | [10:00, 11:00) CONFIRMED, [11:00, 12:00) PENDING_APPROVAL, nic jiného na HPC 08 | přesně tak | `SELECT … FROM reservations WHERE station_id = 8` |
+| 3 | 09:00, admin `POST /reservations/2/approve` | operace projde, 200 CONFIRMED | 200 CONFIRMED | odpověď JSON |
+| 4 | nezávislé čtení po commitu | obě CONFIRMED, 0 překryvů v blokujícím stavu | obě CONFIRMED, překryvů 0 | dotaz na překryv (self-join, `a.start < b.end AND b.start < a.end`) |
+| 5 | reset a zopakování 1–4 | stejný výsledek | stejný výsledek | výstup skriptu, běh 2 |
+
+- **Oracle:** stav přečtený novým spojením přímo ze SQLite, ne z odpovědi aplikace.
+- **Verdikt:** **PASS** (16. 11. 2026, `v0.8.0`).
+- **Co to nepokrývá:** souběh dvou schválení (ten pokrývá `test_op03_req04_concurrent_confirms_allow_exactly_one` jen pro potvrzení), skutečný server jako samostatný proces (běží Flask test client ve stejném procesu, DB je ale skutečný soubor).
+
+## C08 / TC-C08-02 — kolize při potvrzení
+
+- **Test basis:** BR-02 v0.2, OP-03 REQ-03 (v0.2): potvrzení kolidujícího návrhu se odmítne a návrh zůstává DRAFT. ADR-01: odmítnutá operace nezapíše událost.
+- **Baseline:** viz výše, `python scripts/verify_c08.py`.
+- **Předpoklady:** izolovaná DB; B1 = `ridic_ev` HPC 08 [10:00, 11:00) CONFIRMED (jako v TC-01); B2 = `ridic_ev2` HPC 08 [10:30, 11:30) DRAFT. `ridic_ev2` je vlastník B2, takže oprávnění je splněné.
+- **Data:** 15. 9. 2026, 08:00, lokální čas.
+
+| # | Akce | Očekáváno (napsáno před během) | Skutečně | Důkaz |
+| --- | --- | --- | --- | --- |
+| 1 | reset a příprava B1, B2 | jen B1 CONFIRMED, B2 DRAFT | B1 #1 CONFIRMED, B2 #2 DRAFT | výstup skriptu |
+| 2 | nezávislé čtení z DB | časy se překrývají, blokující je jen B1 | #1 [10:00, 11:00) CONFIRMED, #2 [10:30, 11:30) DRAFT, 0 překryvů v blokujícím stavu | SQL dotaz |
+| 3 | `ridic_ev2` `POST /reservations/2/confirm` | odmítnuto, 409 | 409 „Termín se na této stanici překrývá s potvrzenou rezervací…“ | odpověď JSON |
+| 4 | nezávislé čtení po rollbacku | B1 beze změny (i `updated_at`), B2 DRAFT, 0 překryvů, v outboxu žádná událost pro B2 | přesně tak | SQL dotazy na `reservations` a `outbox` |
+| 5 | reset a zopakování 1–4 | stejný výsledek | stejný výsledek | výstup skriptu, běh 2 |
+
+- **Verdikt:** **PASS** (16. 11. 2026, `v0.8.0`). Celkem 18/18 kroků, exit 0.
+- **Co to nepokrývá:** souběžné potvrzení dvou návrhů (pokrývá `test_op03_req04_concurrent_confirms_allow_exactly_one` a měření C04), přímý zápis do DB mimo aplikaci (pokrývá `test_db_triggers_enforce_approval_policy_overlap_and_transitions`).
+
+## Kontrola celého projektu (C01–C07) při C08
+
+Před C08 jsme prošli specifikaci, kód a zadání C01–C07 proti sobě: operace OP-01 až OP-05, pravidla BR-01 až BR-06, hranice lhůt (5 min, 30 min, T_start − 15 min), stavové přechody v triggerech, kódy chyb v API, odkazy na testy a soubory v dokumentaci.
+
+- Specifikace v0.2 a kód si odpovídají, `pytest` 102 passed, `verify_c02.py` 14/14, spike z C01 (`scripts/spike_persistence.py`) dál projde.
+- Nalezený nesoulad: evidence C01 odkazovala na test `test_db_trigger_blocks_overlapping_confirmed_even_without_service`, který jsme v C02 nahradili. Opraveno poznámkou v CV1.
+- Registr rizik C07: opatření pro R-01 a R-04 měla termín 9. 11. 2026 a hotová nebyla. R-01 (P1) řeší CR-08, plánovač (P2, R-04) zůstává otevřený – viz varianta B v CR-08.

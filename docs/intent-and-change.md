@@ -530,3 +530,80 @@ Testy běží přes `python -m pytest` (soubor `tests/test_reservations.py`, pok
 | REQ-09 (OP-05) | notifikace v testech V4 a V5 výše, doručení přes outbox (od C03) `test_adr01_*` | V4, V5 |
 | BR-02 i mimo službu | `test_db_triggers_enforce_approval_policy_overlap_and_transitions` | – |
 | BR-05, BR-06 propadnutí | `test_br05_unconfirmed_draft_expires_without_any_operation`, `test_br06_undecided_request_expires_and_releases_slot` | V6 |
+
+---
+
+# CV8 (C08) – Řízená změna
+
+Příklad ze zadání (žádost čekající na schválení propadne po 30 min) u nás už platí od v0.2 jako BR-06 (lhůta T_start − 15 min, pozdní schválení → 409, stav EXPIRED). Nedělali jsme ho proto znovu a vzali jsme změnu, kterou máme otevřenou z registru rizik (R-01 v C07).
+
+## C08 / CR-08 — Žadatel se dozví, že jeho žádost propadla
+
+**Zdroj a potřeba:**
+R-01 z registru rizik C07 ([evidence-and-evolution.md](evidence-and-evolution.md), CV7) a zbývající předpoklad z C02. Když admin nestihne žádost na DC/HPC posoudit do T_start − 15 min, žádost propadne do EXPIRED, ale řidiči nepřijde žádná zpráva. Dozví se to, jen když se sám podívá do „Moje rezervace“, nebo až u stanice, která pro něj není. Zprávu o schválení a zamítnutí přitom dostává (REQ-09), takže čeká, že se ozveme i tady.
+
+**Before:**
+tag `v0.8.0` (commit s tímto záznamem, větev `c08-c10`). Přibyly v něm jen dokumenty a `scripts/verify_c08.py`, kód aplikace (`src/`) je stejný jako `v0.6.0` (`8e60b8c`). Specifikace v0.2: BR-06, OP-05, stavový diagram v0.2. Architektura: ADR-01 (outbox), D7 (líné propadání), G3 (přechod do EXPIRED vlastní `ReservationService.expire_overdue()`). Schéma DB verze 5. Podrobný záznam baseline je v [evidence-and-evolution.md](evidence-and-evolution.md), CV8.
+
+**Dosavadní chování / omezení:**
+`expire_overdue()` je jeden `UPDATE`, který přepne propadlé DRAFT a PENDING_APPROVAL do EXPIRED. Běží na začátku každého requestu (D7). Do outboxu nic nezapíše, takže Notification Service o propadnutí neví (D7: „k propadnutí žádosti se neposílá notifikace“).
+
+**Nové chování, rozsah a co do změny nepatří:**
+Když žádost PENDING_APPROVAL propadne podle BR-06, žadatel dostane přes Notification Service zprávu, že o žádosti nikdo nerozhodl a termín pro něj neplatí.
+Mimo rozsah: propadnutí DRAFT (BR-05, návrh si uživatel sám nepotvrdil), eskalace nebo automatické schválení žádosti po lhůtě (na to jsme se v R-01 chtěli zeptat, zatím nerozhodnuto), připomenutí adminovi, upozornění ostatních na uvolněný slot při propadnutí, změny UI a plánovač, který by propadnutí provedl i bez provozu.
+
+**Podmínky přijetí:**
+- **AC-01 pozitivní:** o žádosti HPC 09 [10:00, 10:30) (lhůta 09:45) nikdo nerozhodne. Po propadnutí je žádost EXPIRED a žadatel má právě jednu zprávu o propadnutí s číslem rezervace.
+- **AC-02 negativní:** žádost, která byla před lhůtou schválená, zamítnutá nebo stažená, zprávu o propadnutí nedostane. Propadlý DRAFT (BR-05) zprávu nevytvoří.
+- **AC-03 hranice:** BR-06 se nemění, lhůta je ještě povolená. V 09:45:00 žádost nepropadne, zpráva nevznikne a schválení projde. V 09:45:01 propadne a zpráva vznikne. Pozdní schválení (09:50) skončí 409 jako dosud a žadatel dostane zprávu o propadnutí, ne o schválení.
+- **AC-04 regrese:** BR-02 drží (TC-C08-01, TC-C08-02), propadnutí dál uvolní stanici (V6), další requesty po propadnutí nevytvoří druhou zprávu a výpadek Notification Service nezmění výsledek propadnutí (ADR-01: zpráva počká v outboxu).
+
+**Jak jsme hledali dopady:**
+Od AC-01 jsme šli po kódu: kdo dělá přechod PENDING_APPROVAL → EXPIRED (`expire_overdue()`), kdo ho volá (`grep expire_overdue`: `confirm`, `cancel`, `_decide`, `list_for_user`, `list_all`, `search_availability`, `availability`, `stations_overview`, `views.api_reservation`), jak se zapisuje a doručuje událost (`_emit()` → `outbox` → `OutboxDispatcher._deliver()` → `NotificationService`) a které testy a dokumenty se toho týkají. Jiné cesty zápisu stavu nemáme – `UPDATE reservations` je jen v `services/reservations.py` (a ve spike skriptu z C01), admin import ani worker neexistují.
+
+| Oblast / artefakt | CHANGE / CHECK / NO IMPACT + proč | Co udělat / jak ověřit | Owner / důkaz |
+| --- | --- | --- | --- |
+| Specifikace: BR-06 | CHANGE – přibývá, co se stane při propadnutí žádosti | doplnit do BR-06 zprávu žadateli | J. Staněk, review textu |
+| Stavový diagram v0.2, use case | NO IMPACT – přechod PENDING_APPROVAL → EXPIRED už existuje, notifikace diagram neukazuje ani u jiných přechodů; propadnutí není operace aktéra | – | – |
+| Architektura: ADR-01, G3 | CHECK – zpráva musí jít přes outbox ve stejné transakci jako přechod do EXPIRED, vlastník přechodu zůstává `expire_overdue()` | `tests/test_architecture.py` (rezervace dál nezná Notification Service, novou událost volá jen dispatcher) | J. Staněk, testy |
+| Architektura: D7 | CHANGE – věta „k propadnutí žádosti se neposílá notifikace“ přestane platit | upravit D7 | J. Staněk |
+| Kód: `ReservationService.expire_overdue()` | CHANGE – dnes samostatný `UPDATE`, nově načíst propadlé žádosti, přepnout je a zapsat událost v jedné transakci (jinak by dva souběžné requesty mohly poslat dvě zprávy) | unit / component testy AC-01 až AC-04 | J. Staněk |
+| Kód: volající `expire_overdue()` | CHECK – všichni ho volají mimo otevřenou transakci, rozhraní se nemění | celá sada `pytest`, `verify_c02.py` | – |
+| Kód: `NotificationService`, `OutboxDispatcher._deliver()` | CHANGE – nová událost `reservation_expired` a text zprávy | test doručení zprávy | J. Staněk |
+| Kód: `policies.py` | NO IMPACT – `ConfirmationPolicy` řeší potvrzení DRAFT, ne propadnutí žádosti | – | – |
+| Data / schéma | NO IMPACT pro schéma – `outbox.event` je text a payload JSON, verze 5 zůstává. CHECK u starých dat – žádosti, které propadly před nasazením, zprávu zpětně nedostanou (rozhodnutí: nedoplňujeme); čekající žádosti ji dostanou, až propadnou | – | rozhodnutí v tomto záznamu |
+| HTTP API, UI, role | NO IMPACT – žádný nový endpoint ani kód odpovědi; stránka Notifikace zobrazí jakoukoli zprávu | integrační test přes HTTP (zpráva je vidět na `/notifications`) | – |
+| Konfigurace | NO IMPACT – nový parametr nevzniká, 15 min zůstává konstanta BR-06; časy jsou lokální čas serveru (D3) jako dosud | – | – |
+| Testy | CHANGE – nové testy AC-01 až AC-03; regrese TC-C08-01/02, `verify_c02.py` (V6), `test_br06_*`, `test_op05_approve_after_deadline_*`, `test_adr01_*`, `test_architecture.py` | spustit před změnou a po ní | J. Staněk |
+| Kvalita (C04, D9) | CHECK – `expire_overdue()` běží u každého requestu a z jednoho `UPDATE` bude transakce se `SELECT` + `UPDATE` | přeměřit `scripts/measure_c04.py`, K3 p95 ≤ 500 ms | D. Volný |
+| Release / rollback | CHECK – po vrácení kódu na starou verzi nezná dispatcher událost `reservation_expired`, zůstane v outboxu nedoručená (neztratí se, ale nedoručí) | zapsat do release záznamu C09 | J. Staněk |
+| Provoz | CHECK – propadnutí je pořád líné (D7): zpráva vznikne až s nejbližším requestem po lhůtě a doručí se po nejbližším POST nebo skriptem `dispatch_notifications.py` (I-01, I-02 zůstávají) | uvést jako známé omezení | J. Staněk |
+
+**Varianty:**
+
+| Varianta | Splní AC? | Přínos | Náklady / co se může pokazit / návrat | Ověření |
+| --- | --- | --- | --- | --- |
+| A: zpráva při líném propadnutí – `expire_overdue()` zapíše do outboxu `reservation_expired` | ano, AC-01 až AC-04; zpráva ale vznikne až s nejbližším requestem po lhůtě | malá změna na jednom místě, použije existující outbox, žádný nový proces | bez provozu zpráva čeká; delší `expire_overdue()` (C04 přeměřit); po rollbacku zůstanou v outboxu nedoručitelné události | testy AC-01 až AC-04, TC-C08-01/02, `verify_c02.py`, `measure_c04.py` |
+| B: A + plánovač – `dispatch_notifications.py` nejdřív zavolá `expire_overdue()` a Plánovač úloh / cron ho pouští každých 5 min | ano, a zpráva přijde nejpozději do 5 min i bez provozu (řeší i I-01, I-02) | spolehlivější načasování | aplikace neběží na žádném serveru, jen na našich noteboocích, plánovač nemá kde trvale běžet; souběh skriptu a aplikace ve dvou procesech (fronta D9 funguje jen v jednom); v CI to neověříme | běh plánovače, log skriptu, test dvou procesů |
+| C: beze změny kódu – stav EXPIRED je vidět v „Moje rezervace“ | ne, AC-01 nesplní | nic se nemění | R-01 zůstává MEDIUM | V6 ve `verify_c02.py` |
+
+**Co když nic neuděláme:** řidič může jet ke stanici, kterou už nemá, nebo zbytečně čekat na schválení, které nepřijde. R-01 zůstane MEDIUM (4).
+
+**Peer review a zpochybněný předpoklad:**
+Reviewer: **DOPLNIT** (Š. Exner nebo D. Volný). Zpochybněný předpoklad: „stačí líné propadnutí“. V noci nebo ráno bez provozu vznikne zpráva až s prvním requestem, a doručí se až po prvním POST, klidně až po začátku rezervace. Odpověď: přes den, kdy se rezervuje nejvíc, requesty chodí často a zpráva přijde brzo. Spolehlivé načasování řeší varianta B a tu odkládáme (viz rozhodnutí).
+
+**Rozhodnutí:** ACCEPT varianta A. Owner J. Staněk, 16. 11. 2026. Důvod: splní AC s nejmenší změnou a nic nového se nemusí provozovat. Varianta B je DEFER: chybí stroj, kde by aplikace a plánovač běžely trvale. Znovu otevřeme, až aplikace poběží na serveru nebo když cvičící bude chtít zprávu i bez provozu.
+
+**Předávka do C09 (nejmenší změna a testy):**
+
+| Co | Obsah |
+| --- | --- |
+| Before | `v0.8.0` (kód = `v0.6.0`), BR-06 v0.2, výsledky TC-C08-01/02 v evidenci CV8 |
+| Přijato | CR-08 varianta A: při propadnutí žádosti zapsat do outboxu `reservation_expired` |
+| Změna | `expire_overdue()` (transakce + `_emit()`), `NotificationService.reservation_expired()`, `OutboxDispatcher._deliver()`, BR-06 a D7 v dokumentaci |
+| Nové testy | AC-01: propadlá žádost → EXPIRED + právě 1 zpráva; AC-02: schválená / zamítnutá / stažená žádost a propadlý DRAFT bez zprávy; AC-03: 09:45:00 nic a schválení projde, 09:45:01 zpráva, 09:50 approve → 409 + zpráva o propadnutí |
+| Regrese | TC-C08-01/02, `pytest`, `verify_c02.py` 14/14, `test_architecture.py`, `measure_c04.py` (K3) |
+| Riziko | souběh aplikace a skriptu ve dvou procesech při propadnutí – spoléháme na `BEGIN IMMEDIATE` jako u REQ-04, zvlášť ověřené to není (NOT VERIFIED) |
+| C09 | commit + tag, integrační běh přes HTTP, CI, čistý checkout, rozhodnutí o release |
+
+**Otevřené:** jestli má žádost po lhůtě eskalovat (otázka z R-01) a varianta B. Spouštěč: cvičící, nasazení na server nebo stížnost, že zpráva přišla pozdě.
