@@ -233,6 +233,11 @@ a.cell:hover { background: var(--ok); }
 .cell.reserved, .cell.in_use, .cell.pending, .cell.past { box-shadow: none; }
 .cell.mine { box-shadow: inset 0 0 0 3px var(--accent); }
 .cell.selected { background: var(--accent); box-shadow: none; }
+.timeline.pickable { user-select: none; -webkit-user-select: none; }  /* výběr tažením (timeline.js) */
+.timeline.pickable a.cell { cursor: pointer; }
+.timeline.pickable a.cell:hover { background: var(--accent-soft); box-shadow: inset 0 -4px 0 var(--accent); }
+.timeline.pickable a.cell.selected:hover { background: var(--accent); }
+.pick-summary { min-height: 1.5em; color: var(--ink); }
 .legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: var(--step--1); color: var(--muted); }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
 .legend i { display: inline-block; width: 18px; height: 12px; }
@@ -257,6 +262,11 @@ a.cell:hover { background: var(--ok); }
 .panel h3 { margin-top: 4px; }
 .steps { margin: 0; padding-left: 1.4em; display: flex; flex-direction: column; gap: 12px; max-width: 70ch; }
 .steps li::marker { font: 700 1.1rem var(--font-display); color: var(--accent); }
+.push-setup { display: grid; grid-template-columns: 13rem minmax(0, 1fr); gap: 24px; align-items: start; }
+.qr-box { margin: 0; display: flex; flex-direction: column; gap: 6px; align-items: center; }
+.qr-box svg { width: 13rem; height: auto; border: 1px solid var(--line); border-radius: var(--radius); }
+.qr-box figcaption { font-size: var(--step--1); color: var(--muted); }
+.topic-big { font: 600 1.35rem/1.3 var(--font-data); letter-spacing: .04em; margin: 8px 0 6px; overflow-wrap: anywhere; }
 .topic { font: 500 .9rem/1.4 var(--font-data); background: var(--accent-soft); color: var(--ink); padding: 2px 6px; border-radius: 3px; overflow-wrap: anywhere; }
 
 @media (max-width: 720px) {
@@ -266,6 +276,7 @@ a.cell:hover { background: var(--ok); }
   .choice-row form { grid-column: 2; }
   .station-no { font-size: 3.2rem; }
   .feed li { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .push-setup { grid-template-columns: minmax(0, 1fr); }
   td.actions { text-align: left; }
 }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }

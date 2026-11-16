@@ -120,9 +120,19 @@ def get_push_topic(conn: sqlite3.Connection, user_id: int) -> str | None:
     return row["push_topic"] if row else None
 
 
+# Téma se opisuje do telefonu a ntfy rozlišuje velikost písmen, proto jen malá písmena a číslice
+# bez záměnných znaků (l/1, o/0, i) ve skupinách po 4: "voltbook-k7m3-q9xp-h2td". 31^12 ≈ 2^59 možností.
+_TOPIC_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"
+
+
+def new_push_topic() -> str:
+    groups = ("".join(secrets.choice(_TOPIC_ALPHABET) for _ in range(4)) for _ in range(3))
+    return "voltbook-" + "-".join(groups)
+
+
 def enable_push(conn: sqlite3.Connection, user_id: int) -> str:
     """Vygeneruje nové náhodné téma (funguje jako heslo k odběru – kdo ho zná, vidí zprávy)."""
-    topic = f"voltbook-{secrets.token_urlsafe(16)}"
+    topic = new_push_topic()
     with transaction(conn):
         conn.execute("UPDATE users SET push_topic = ? WHERE id = ?", (topic, user_id))
     return topic

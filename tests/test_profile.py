@@ -1,6 +1,7 @@
 """Vylepšení po C10: kontrola SPZ podle státu, profil vozidel, notifikace na telefon (ntfy), migrace DB v5 -> v6."""
 import http.server
 import logging
+import re
 import threading
 from datetime import datetime
 
@@ -195,7 +196,10 @@ def test_push_goes_to_users_topic_without_license_plate(conn, users, ntfy):
     svc.approve(users["admin"], rid)
     assert dispatch(conn, ntfy) == 1
     [(url, text)] = ntfy.sent
-    assert url == f"https://ntfy.example/{topic}" and topic.startswith("voltbook-")
+    assert url == f"https://ntfy.example/{topic}"
+    # téma se opisuje do telefonu: jen malá písmena a číslice bez záměnných znaků, skupiny po 4
+    assert re.fullmatch(r"voltbook-[a-hj-km-np-z2-9]{4}-[a-hj-km-np-z2-9]{4}-[a-hj-km-np-z2-9]{4}", topic)
+    assert len({notifications.new_push_topic() for _ in range(50)}) == 50
     assert f"#{rid}" in text and "schválena" in text and "SPZ" not in text and "1AB 2345" not in text
     assert any("SPZ 1AB 2345" in m["message"] for m in notifications.list_for_user(conn, users["ev"]))  # v aplikaci SPZ je
 
@@ -255,6 +259,7 @@ def test_web_enable_push_test_message_and_approval_reaches_phone(client, app, nt
     [user] = db_rows(app, "SELECT push_topic FROM users WHERE username = 'ridic_ev'")
     page = client.get("/profile").get_data(as_text=True)
     assert user["push_topic"] in page and "Zapnuto" in page
+    assert '<svg xmlns="http://www.w3.org/2000/svg"' in page and 'class="qr"' in page  # QR kód s odkazem na téma
     client.post("/profile/push/test", data={"csrf_token": TOKEN})
     assert ntfy.sent[-1] == (f"https://ntfy.example/{user['push_topic']}", "Zkušební notifikace z VoltBooku. "
                              "Takhle vám přijde výsledek schválení nebo zpráva o uvolněném stání.")
@@ -310,3 +315,18 @@ def test_migration_from_v5_keeps_data(tmp_path, clock):
     assert VehicleService(conn).add(uid, "Tesla", "BEV", "1AB 2345")
     assert notifications.get_push_topic(conn, uid) is None
     conn.close()
+
+
+# ------------------------------------------------------------------ výběr termínu na časové ose
+
+
+def test_station_timeline_is_ready_for_picking_by_drag(client):
+    """Logiku tažení (static/timeline.js) testujeme zvlášť; tady jen, že stránka nese data pro výběr
+    a bez přihlášení se nic vybírat nedá."""
+    page = client.get(f"/stations/1?date={DAY}").get_data(as_text=True)
+    assert "timeline.js" not in page and "data-free" not in page
+    as_ev(client)
+    page = client.get(f"/stations/1?date={DAY}").get_data(as_text=True)
+    assert "data-timeline" in page and "timeline.js" in page and 'data-max="8"' in page
+    assert page.count("data-free") == 48 - 16  # 15.9. v 08:00: 16 slotů do 08:00 už uplynulo
+    assert page.count("data-time=") == 48

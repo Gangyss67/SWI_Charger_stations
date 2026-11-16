@@ -47,16 +47,22 @@ Reset databáze = smazat soubor `instance/charging.db`. Databázi ze schématu v
 
 Typ vozidla u účtu je jen výchozí hodnota – typ vozu a SPZ se zadávají u každé rezervace. Další účty lze vytvořit přes Registraci.
 
-### Profil: vozidla a notifikace na telefon
+### Quality of life improvements
+
+Přehled všech vylepšení po C10 je v [docs/evidence-and-evolution.md](docs/evidence-and-evolution.md) (Quality of life improvements).
+
+**Výběr termínu na časové ose:** na stránce stání se termín vybírá přímo na ose dne. Myší stisknete začátek a táhnete, na mobilu klepnete na začátek a pak na konec. Začátek a délka se propíšou do formuláře.
+
+#### Profil: vozidla a notifikace na telefon
 
 V **Profil** si uživatel uloží svá auta (název, typ BEV/PHEV, stát a SPZ). Při rezervaci pak jen vybere vozidlo, typ a SPZ se doplní samy. Na HPC stání nejdou vybrat plug-in hybridy (BR-04). Rezervace si údaje kopíruje, takže smazání vozidla historii nemění.
 
 SPZ se kontroluje podle státu ([src/charging/services/plates.py](src/charging/services/plates.py)): česká běžná `1AB 2345` (druhý znak je kód kraje), elektromobil `EL 123AB`, značka na přání 5–8 písmen a číslic (aspoň jedna číslice). U SK, PL, D, A, H jen obecně (písmena, číslice, mezera, pomlčka).
 
 **Notifikace na telefon** jdou přes [ntfy](https://ntfy.sh) – open-source push službu s aplikací pro Android i iPhone, bez registrace a bez API klíče:
-1. V Profilu klikněte na *Zapnout notifikace na telefon*. Aplikace vygeneruje náhodné téma (funguje jako heslo).
-2. Do telefonu si nainstalujte aplikaci **ntfy** (Google Play, F-Droid, App Store), klepněte na **+** a zadejte téma z Profilu.
-3. Tlačítkem *Poslat zkušební notifikaci* si to ověřte.
+1. V Profilu klikněte na *Zapnout notifikace na telefon*. Aplikace vygeneruje náhodné téma ve tvaru `voltbook-xxxx-xxxx-xxxx` (funguje jako heslo).
+2. Naskenujte telefonem **QR kód** z Profilu. Otevře se stránka tématu na ntfy, kde povolíte notifikace. Nebo si nainstalujte aplikaci **ntfy** (Google Play, F-Droid, App Store), klepněte na **+** a opište téma (jen malá písmena a číslice).
+3. Tlačítkem *Poslat zkušební notifikaci* si to ověřte. Když nepřijde, telefon odebírá jiné téma – smažte odběr a přidejte ho znovu.
 
 Na telefon pak přijde totéž co do Notifikací v aplikaci (schválení, zamítnutí, zrušení adminem, propadlá žádost, uvolněné stání), jen bez SPZ. Server nastavuje proměnná `NTFY_URL` (výchozí `https://ntfy.sh`, může to být i vlastní ntfy server, prázdná hodnota = funkce vypnutá).
 
@@ -145,7 +151,7 @@ docs/
   architecture-and-decisions.md rozhodnutí, architektura (C03), D9 (C04) a detailní návrh (C05)
   evidence-and-evolution.md     evidence C01 (spike), C02, C03, C04 (měření), C05, C06 (reakce na nálezy),
                                 C07 (ověření nálezů, rizika), C08 (baseline a test casy),
-                                C09 (integrace, CI, release), C10 (provozní situace a logy)
+                                C09 (integrace, CI, release), C10 (provozní situace a logy), quality of life improvements
   assessment_form.md            C06 – hodnocení od týmu ParkingCrew + naše disposition
   diagrams/                     use case, stavové a aktivitní diagramy v0.1/v0.2 (C02),
                                 diagramy architektury c03_* a detailního návrhu c05_* (PlantUML + PNG)
@@ -162,6 +168,8 @@ src/charging/
   services/outbox.py            doručování událostí z outboxu (ADR-01)
   services/plates.py            kontrola a sjednocení SPZ podle státu
   services/vehicles.py          profil vozidel uživatele
+  qr.py                         QR kód (SVG) pro nastavení notifikací na telefonu, bez knihovny
+  static/timeline.js            výběr termínu tažením na časové ose stání
   templates/, static/
 scripts/spike_persistence.py    C01 spike A – persistence
 scripts/verify_c02.py           C02 – příklady ověření baseline v0.2 přes HTTP
@@ -169,5 +177,6 @@ scripts/verify_c08.py           C08 – krokované test casy TC-C08-01/02 (BR-02
 scripts/dispatch_notifications.py  C03 – opakované doručení notifikací z outboxu
 scripts/measure_c04.py          C04 – měření souběžného potvrzování (kritérium K1–K3)
 tests/                          pytest testy (test_architecture.py = pravidlo z ADR-01, test_confirmation_design.py = C05,
-                                test_profile.py = SPZ, vozidla, notifikace na telefon, migrace DB)
+                                test_profile.py = SPZ, vozidla, notifikace na telefon, migrace DB,
+                                test_qr.py = QR kód, test_timeline_js.py = výběr na časové ose přes node)
 ```

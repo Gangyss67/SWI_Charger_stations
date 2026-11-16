@@ -487,7 +487,7 @@ Překryv počítáme jako `r.start < end and start < r.end`, takže rezervace, k
 
 ---
 
-# Vylepšení po C10
+# Quality of life improvements (po C10)
 
 ## D10 – Profil vozidel a kontrola SPZ podle státu
 - **Kontext:** typ vozu a SPZ se zadávaly ručně u každé rezervace (D8) a SPZ se kontrolovala jen obecně (písmena, číslice, max. 12 znaků), takže prošlo i „ABC“.
@@ -498,5 +498,16 @@ Překryv počítáme jako `r.start < end and start < r.end`, takže rezervace, k
 - **Kontext:** Notification Service měla jen in-app schránku. D5 a ADR-01 počítaly s tím, že další kanál půjde přidat jako `NotificationChannel`.
 - **Rozhodnutí:** `PushChannel` posílá kopii zprávy přes [ntfy](https://ntfy.sh) (HTTP POST na náhodné téma uživatele, `users.push_topic`). `build_channel()` skládá kanály pro aplikaci i pro `dispatch_notifications.py`: nejdřív in-app schránka, pak telefon. Vybrali jsme ntfy, protože nepotřebuje účet, API klíč ani platbu (SMS brána by stála peníze a Web Push by potřeboval HTTPS a klíče VAPID) a jde provozovat i na vlastním serveru (`NTFY_URL`).
 - **Selhání:** push je **best-effort**, posílá se jednou ve vlákně. Když ntfy nejede, chyba se zaloguje (C10) a in-app zpráva zůstane doručená. Kdyby se push opakoval přes outbox, výpadek ntfy by zdržoval každý POST (dispatch je v `after_request`) a blokoval i in-app zprávy. Vlákno je kvůli tomu, aby HTTP volání nedrželo zámek zápisu DB (dispatcher doručuje v transakci, D9).
-- **Soukromí:** téma je náhodné (`secrets.token_urlsafe`) a funguje jako heslo. SPZ se na telefon neposílá, text jde přes cizí server.
+- **Soukromí:** téma je náhodné (`secrets`, 12 znaků ve skupinách po 4, jen malá písmena a číslice bez záměnných znaků, aby se dalo bez chyby opsat do telefonu – ntfy rozlišuje velikost písmen) a funguje jako heslo. SPZ se na telefon neposílá, text jde přes cizí server.
 - **Důsledky:** push může přijít dvakrát, když se doručení události v outboxu opakuje (stejné „aspoň jednou“ jako v ADR-01), a při výpadku ntfy se ztratí – v aplikaci je zpráva vždycky. ADR-01 platí dál, `ReservationService` o novém kanálu neví (`tests/test_architecture.py`).
+
+## D12 – QR kód pro nastavení telefonu, vlastní generátor
+- **Kontext:** po prvním zkoušení notifikace na telefon nechodily. Zkušební zpráva přitom na ntfy.sh dorazila, jen telefon odebíral jiné téma. Původní téma (31 náhodných znaků, velká i malá písmena, `-`, `_`) se do telefonu špatně opisovalo a ntfy rozlišuje velikost písmen.
+- **Rozhodnutí:** (1) nové téma je ve tvaru `voltbook-xxxx-xxxx-xxxx`, jen malá písmena a číslice bez záměnných znaků. (2) V profilu je QR kód s odkazem `https://ntfy.sh/<téma>`, telefon ho načte fotoaparátem. QR generuje vlastní malý modul `src/charging/qr.py` (byte mode, úroveň opravy M, verze 1–6, SVG) bez další knihovny, aby aplikace neměla novou závislost a QR se generoval na serveru i bez internetu.
+- **Ověření:** `tests/test_qr.py` – Reed-Solomon proti známému příkladu z normy („HELLO WORLD“ 1-M), formátové bity proti tabulce z normy, zpětné přečtení QR z matice (formát, maska, RS kontrola, data).
+- **Důsledky:** delší adresa vlastního ntfy serveru než ~90 znaků se do verze 6 nevejde, pak se QR nezobrazí a zůstane opsání tématu.
+
+## D13 – Výběr termínu tažením na časové ose
+- **Kontext:** na stránce stání se začátek vybíral kliknutím na slot a délka v rozbalovacím seznamu, což bylo neohrabané.
+- **Rozhodnutí:** `src/charging/static/timeline.js` – myší se stiskne začátek a táhne do konce, na mobilu se klepne na začátek a pak na konec. Jde vybrat jen souvislý úsek volných slotů v rámci dne, nejvýš 8 (4 h). Výběr se propisuje do polí Začátek a Délka (a naopak), formulář a server se nemění. Bez JavaScriptu fungují odkazy na slotech a seznamy jako dřív.
+- **Ověření:** logika výběru je oddělená od DOM a testuje se přes node (`tests/test_timeline_js.py`, v CI na GitHubu node je, jinde se test přeskočí). Šablona: `test_station_timeline_is_ready_for_picking_by_drag`.

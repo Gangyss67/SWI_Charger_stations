@@ -4,9 +4,11 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 from flask import Blueprint, abort, current_app, flash, g, jsonify, redirect, render_template, request, url_for
+from markupsafe import Markup
 
 from .auth import admin_required, login_required
 from .db import get_db
+from .qr import qr_svg
 from .services import notifications
 from .services.notifications import NotificationService, build_channel
 from .services.outbox import OutboxDispatcher
@@ -376,13 +378,21 @@ def _ntfy_url() -> str:
 
 def _render_profile(form: dict | None = None, status: int = 200):
     form = form or {"name": "", "vehicle_type": _default_vehicle(), "plate_country": DEFAULT_COUNTRY, "license_plate": ""}
+    topic = notifications.get_push_topic(get_db(), g.user["id"])
+    push_link = f"{_ntfy_url()}/{topic}" if topic and _ntfy_url() else ""
+    try:  # QR kód s odkazem na téma – telefon ho načte fotoaparátem
+        push_qr = Markup(qr_svg(push_link)) if push_link else None
+    except ValueError:  # moc dlouhá adresa vlastního ntfy serveru
+        push_qr = None
     return render_template(
         "profile.html",
         vehicles=_vehicles(),
         vehicle_types=VEHICLE_TYPES,
         countries=COUNTRIES,
         form=form,
-        push_topic=notifications.get_push_topic(get_db(), g.user["id"]),
+        push_topic=topic,
+        push_link=push_link,
+        push_qr=push_qr,
         ntfy_url=_ntfy_url(),
     ), status
 

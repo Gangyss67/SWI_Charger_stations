@@ -69,19 +69,29 @@
     </form>
   {% else %}
     <p><span class="lamp ok">Zapnuto</span></p>
-    <ol class="steps">
-      <li>Nainstalujte si aplikaci <strong>ntfy</strong>: Android z <a href="https://play.google.com/store/apps/details?id=io.heckel.ntfy" rel="noopener">Google Play</a> nebo <a href="https://f-droid.org/packages/io.heckel.ntfy/" rel="noopener">F-Droid</a>, iPhone z App Store (<a href="https://docs.ntfy.sh/subscribe/phone/" rel="noopener">návod</a>).</li>
-      <li>V aplikaci klepněte na <strong>+</strong> a přidejte téma
-        <code class="topic">{{ push_topic }}</code>
-        <button type="button" class="btn small quiet" data-copy="{{ push_topic }}">Kopírovat</button>
-        {% if ntfy_url != 'https://ntfy.sh' %}<br><small>Server: <code class="topic">{{ ntfy_url }}</code></small>{% endif %}
-        <br><small>Nebo na telefonu otevřete <a href="{{ ntfy_url }}/{{ push_topic }}" rel="noopener">{{ ntfy_url }}/{{ push_topic }}</a>.</small></li>
-      <li>Pošlete si zkušební notifikaci:
-        <form method="post" action="{{ url_for('main.test_push') }}" class="inline">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          <button class="btn small">Poslat zkušební notifikaci</button>
-        </form></li>
-    </ol>
+    <div class="push-setup">
+      {% if push_qr %}
+      <figure class="qr-box">
+        {{ push_qr }}
+        <figcaption>Načtěte fotoaparátem telefonu</figcaption>
+      </figure>
+      {% endif %}
+      <ol class="steps">
+        {% if push_qr %}
+        <li><strong>Naskenujte QR kód</strong> fotoaparátem telefonu. Otevře se stránka vašeho tématu na ntfy, kde povolíte notifikace. Na Androidu to stačí. Na iPhonu notifikace z prohlížeče chodí jen s webem přidaným na plochu, tam je lepší aplikace (další bod).</li>
+        {% endif %}
+        <li>{% if push_qr %}Nebo s aplikací: n{% else %}N{% endif %}ainstalujte si <strong>ntfy</strong> (Android z <a href="https://play.google.com/store/apps/details?id=io.heckel.ntfy" rel="noopener">Google Play</a> nebo <a href="https://f-droid.org/packages/io.heckel.ntfy/" rel="noopener">F-Droid</a>, iPhone z App Store, <a href="https://docs.ntfy.sh/subscribe/phone/" rel="noopener">návod</a>), klepněte na <strong>+</strong> a opište téma přesně tak, jak je tady:
+          <p class="topic-big">{{ push_topic }}</p>
+          <button type="button" class="btn small quiet" data-copy="{{ push_topic }}">Kopírovat</button>
+          {% if ntfy_url != 'https://ntfy.sh' %}<br><small>V aplikaci zapněte „Použít jiný server“ a zadejte <code class="topic">{{ ntfy_url }}</code>.</small>{% endif %}</li>
+        <li>Pošlete si zkušební notifikaci:
+          <form method="post" action="{{ url_for('main.test_push') }}" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="btn small">Poslat zkušební notifikaci</button>
+          </form>
+          <br><small>Zpráva se objeví do pár sekund. Když nepřijde, telefon odebírá jiné téma, než je tady. Odběr smažte a přidejte znovu (nejjednodušší je přes QR kód). {% if not push_topic.count('-') == 3 %}<strong>Máte ještě staré, těžko opsatelné téma, klikněte níže na „Vygenerovat nové téma“.</strong>{% endif %}</small></li>
+      </ol>
+    </div>
     <p class="note">Téma funguje jako heslo: kdo ho zná, vidí vaše notifikace. Nikomu ho neposílejte. SPZ do notifikací na telefon neposíláme. Kdyby se téma dostalo ven, vygenerujte si nové.</p>
     <div class="row">
       <form method="post" action="{{ url_for('main.enable_push') }}" class="inline">

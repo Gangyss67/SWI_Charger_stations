@@ -26,16 +26,16 @@
   </div>
 
   <div class="table-wrap">
-    <div class="timeline">
+    <div class="timeline" data-timeline>
       {% for half in (slots[:24], slots[24:]) %}
       <div class="tl-row">
         {% for s in half if s.time.endswith(':00') %}<span class="tl-hour">{{ s.time[:2] }}</span>{% endfor %}
         {% for slot in half %}
           {% set label = slot.time ~ '–' ~ slot.end.strftime('%H:%M') %}
           {% if slot.state == 'FREE' and g.user %}
-            <a class="cell{% if slot.time == selected_time %} selected{% endif %}" href="{{ url_for('main.station_detail', station_id=station.id, date=day.isoformat(), time=slot.time) }}#form" title="{{ label }} volno, vybrat začátek" aria-label="{{ label }} volno"></a>
+            <a class="cell{% if slot.time == selected_time %} selected{% endif %}" href="{{ url_for('main.station_detail', station_id=station.id, date=day.isoformat(), time=slot.time) }}#form" data-time="{{ slot.time }}" data-free title="{{ label }} volno" aria-label="{{ label }} volno"></a>
           {% else %}
-            <span class="cell {{ slot.state|lower }}{% if slot.mine %} mine{% endif %}" title="{{ label }}"></span>
+            <span class="cell {{ slot.state|lower }}{% if slot.mine %} mine{% endif %}" data-time="{{ slot.time }}" title="{{ label }}"></span>
           {% endif %}
         {% endfor %}
       </div>
@@ -48,8 +48,9 @@
     <span><i class="cell reserved"></i>rezervováno</span>
     <span><i class="cell in_use"></i>právě nabíjí</span>
     <span><i class="cell past"></i>uplynulo</span>
-    {% if g.user %}<span><i class="cell mine"></i>vaše</span>{% endif %}
+    {% if g.user %}<span><i class="cell mine"></i>vaše</span><span><i class="cell selected"></i>váš výběr</span>{% endif %}
   </div>
+  {% if g.user %}<p class="note pick-summary" id="pick-summary" aria-live="polite">Termín vyberte přímo na ose: klikněte na začátek a táhněte myší, nebo klepněte na začátek a pak na konec. Nejdéle {{ max_slots // 2 }} hodiny.</p>{% endif %}
 </section>
 
 <section class="two-col" id="form">
@@ -68,7 +69,7 @@
           {% for t in time_options %}<option value="{{ t }}"{% if t == selected_time %} selected{% endif %}>{{ t }}</option>{% endfor %}
         </select></label>
       <label class="field" for="r-slots"><span>Délka</span>
-        <select id="r-slots" name="slots">
+        <select id="r-slots" name="slots" data-max="{{ max_slots }}">
           {% for n in range(1, max_slots + 1) %}<option value="{{ n }}"{% if n == selected_slots %} selected{% endif %}>{{ '%d:%02d' % (n // 2, 30 * (n % 2)) }} h</option>{% endfor %}
         </select></label>
       {% if vehicles %}{{ vehicle_picker(vehicles, vehicle_id, 'r-vehicle-id') }}{% endif %}
@@ -88,4 +89,5 @@
     <p>Potvrzenou rezervaci zrušíte nejpozději 30 minut před začátkem.</p>
   </aside>
 </section>
+{% if g.user %}<script src="{{ url_for('static', filename='timeline.js') }}" defer></script>{% endif %}
 {% endblock %}
