@@ -584,3 +584,45 @@ Nic jsme ručně nedoplňovali, stačilo README. Provedl J. Staněk (autor změn
 
 **Rozhodnutí o release candidate:** **CONDITIONAL** – owner J. Staněk, 16. 11. 2026.
 Nové AC i regrese prošly lokálně i v čistém checkoutu a C04 platí. Chybí ale: (1) review diffu druhým členem, (2) zelený běh CI na GitHubu, (3) čistý checkout od druhého člena. Když budou všechny tři v pořádku, bude to READY. Když CI nebo review najde problém s AC, HOLD a vracíme se k CR-08. Nezamčené nepřímé závislosti bereme jako známé omezení.
+
+---
+
+# CV10 (C10)
+
+## C10 — Provozní situace a logy
+
+**Testovaný commit:** první běh na `30d4645` (kód = `v0.9.0`), po doplnění logu znovu na `50100c6`. 16. 11. 2026, Windows 11, Python 3.14.7.
+
+**Jak:** aplikace spuštěná jako `python run.py` (samostatný proces, vývojový server) s vlastní testovací DB přes `DATABASE_PATH` v dočasném adresáři, `SECRET_KEY` testovací, stdout/stderr do souboru `server.log`. Operace jsme posílali přes HTTP jako prohlížeč (přihlášení demo účtů `ridic_ev` a `ridic_phev`, CSRF, JSON), rezervace na zítřek 17. 11. Stav jsme po každé situaci četli zvlášť přímo z SQLite (`sqlite3`, nové spojení). Výpadek DB jsme udělali tak, že jiný proces otevřel stejnou DB a držel ji 25 s zamčenou (`BEGIN EXCLUSIVE`), pak zámek pustil – jen na testovacích datech.
+
+| Situace | Očekávaný a skutečný výsledek | Jak jsme správnost ověřili | Co ukazují logy / je log potřeba? |
+| --- | --- | --- | --- |
+| Úspěšné potvrzení | Oček.: AC 01 [10:00, 11:00) vytvořit (201 DRAFT) a potvrdit (200 CONFIRMED). Skut.: 201 DRAFT → 200 CONFIRMED. | odpověď JSON + `SELECT` z DB: #1 AC 01 [10:00, 11:00) CONFIRMED | jen řádek přístupového logu `POST /reservations/1/confirm … 200`. Víc logovat není potřeba, správnost dokazuje odpověď a stav v DB. |
+| Zamítnutá kolize | Oček.: PHEV potvrzuje AC 01 [10:30, 11:00) → 409, návrh zůstane DRAFT. Skut.: 409 „Termín se na této stanici překrývá…“, #2 DRAFT. | DB: #1 CONFIRMED beze změny, #2 DRAFT, 0 překryvů v blokujícím stavu | přístupový log `… /reservations/2/confirm … 409`. Je to běžné doménové zamítnutí, ne chyba – uživatel dostane důvod v odpovědi a stav je v DB. Zvláštní záznam nepřidáváme, byl by to jen šum. Audit by dával smysl spíš u rozhodnutí admina (R-05), to tu nebylo. |
+| Technická porucha a obnova | Oček.: během výpadku vytvoření rezervace AC 02 selže chybou serveru a nic se nezapíše; po obnovení po kontrole stavu projde. Skut.: 500 Internal Server Error po 21 s; DB po obnovení: rezervací pořád 2, na AC 02 žádná → zopakováno: 201 DRAFT → 200 CONFIRMED. | před opakováním jsme nejdřív přečetli DB (počet rezervací a AC 02), abychom zápis neopakovali naslepo | `ERROR charging: Exception on /reservations [POST]` s časem, místem (`auth.py`, `load_logged_in_user` – první čtení z DB) a typem `sqlite3.OperationalError: database is locked`, pak přístupový log `500`. Z logu je poznat kdy, kde a jak aplikace reagovala. Že se nic nezapsalo, z logu poznat nejde – to jsme ověřili v DB. |
+| Restart aplikace | Oček.: po zastavení a novém startu potvrzené rezervace #1 a #3 zůstanou CONFIRMED a další operace projde. Skut.: #1 a #3 CONFIRMED (API i DB), nová rezervace AC 03 201 → 200 CONFIRMED. | `GET /api/reservations/<id>` + `SELECT` z DB před a po restartu | v prvním běhu byl start vidět jen jako `* Serving Flask app 'charging'` bez času a bez informace o DB, zastavení vůbec. Doplnili jsme záznam o startu (viz níže) a pokus zopakovali. Zastavení v logu není dál – proces jsme ukončili natvrdo (jako zavření okna), aplikace nemá šanci nic zapsat. Restart poznáme podle nového řádku „start“. |
+
+**Doplněný log (commit `d008833` a `50100c6`, `run.py`):** logger aplikace má čas u každého záznamu a při startu se zapíše jeden řádek. Do logu jde jen název souboru DB, plná cesta obsahuje jméno uživatele. První verze nastavila formát globálně a Werkzeug pak psal do souboru ANSI barvy, proto `50100c6` formát omezuje jen na logger `charging`.
+
+Výřez logu po doplnění (běh na `50100c6`, cesty zkrácené):
+```
+2026-11-16 10:32:04,538 INFO charging: VoltBook start: databáze c10.db, schéma v5
+127.0.0.1 - - [16/Nov/2026 10:32:05] "POST /reservations/2/confirm HTTP/1.1" 409 -
+2026-11-16 10:32:16,509 ERROR charging: Exception on /reservations [POST]
+  File "src\charging\auth.py", line 29, in load_logged_in_user
+sqlite3.OperationalError: database is locked
+2026-11-16 10:32:26,994 ERROR charging: Outbox dispatch failed
+sqlite3.OperationalError: database is locked
+127.0.0.1 - - [16/Nov/2026 10:32:26] "POST /reservations HTTP/1.1" 500 -
+2026-11-16 10:32:33,162 INFO charging: VoltBook start: databáze c10.db, schéma v5
+127.0.0.1 - - [16/Nov/2026 10:32:33] "GET /api/reservations/1 HTTP/1.1" 200 -
+```
+
+**Nález z logu (I-03, otevřené):** po chybě 500 ještě běží doručování outboxu po POST (`after_request`), které na zamčené DB čeká dalších 10 s. Uživatel tak na chybu čekal 21 s místo 10 s a v logu jsou k jednomu requestu dvě chyby. Oprava by byla malá (po odpovědi 5xx outbox nedoručovat), ale zatím jsme ji nedělali – jen zapisujeme.
+
+Ověřeno i po změně `run.py`: `pytest` 107 passed, `verify_c02.py` 14/14, `verify_c08.py` 29/29, `measure_c04.py` (spouští `run.py`) splněno, p95 OP-03 280 ms, 0 výjimek v logu. Nic nebylo BLOCKED. Neověřili jsme řádné zastavení přes Ctrl+C.
+
+**Shrnutí:**
+- *Co logovat:* technické chyby (výjimky, nedoručená notifikace z outboxu) a start aplikace s tím, nad jakou DB běží. Úspěch a doménové zamítnutí (409) stačí přístupový log a odpověď, vlastní záznam by byl jen šum. Rozhodnutí admina by časem chtělo audit (R-05), ale to je jiná věc než provozní log.
+- *Co jsme z logů opravdu zjistili:* kdy a kde výpadek DB nastal (první čtení uživatele v `auth.py`), jakou chybou (`database is locked`) a že aplikace odpověděla 500. Taky že outbox po chybě zbytečně čeká (I-03). Po doplnění i kdy aplikace startovala a s jakou DB.
+- *Co jsme museli ověřit jinak:* že se při výpadku nic nezapsalo, že kolize nechala stav beze změny a že rezervace přežily restart – to log neřekne, to jsme četli přímo z DB.

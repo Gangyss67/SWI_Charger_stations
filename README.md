@@ -128,7 +128,8 @@ docs/
                                 BR-01..BR-06, baseline v0.1 a v0.2 + dopad změny (C02), change request CR-08 (C08)
   architecture-and-decisions.md rozhodnutí, architektura (C03), D9 (C04) a detailní návrh (C05)
   evidence-and-evolution.md     evidence C01 (spike), C02, C03, C04 (měření), C05, C06 (reakce na nálezy),
-                                C07 (ověření nálezů, rizika), C08 (baseline a test casy)
+                                C07 (ověření nálezů, rizika), C08 (baseline a test casy),
+                                C09 (integrace, CI, release), C10 (provozní situace a logy)
   assessment_form.md            C06 – hodnocení od týmu ParkingCrew + naše disposition
   diagrams/                     use case, stavové a aktivitní diagramy v0.1/v0.2 (C02),
                                 diagramy architektury c03_* a detailního návrhu c05_* (PlantUML + PNG)
